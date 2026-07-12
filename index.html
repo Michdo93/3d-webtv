@@ -124,6 +124,7 @@
     let dragStartX = 0, channelDragAccum = 0;
     const CHANNEL_STEP_DEG = 22;
     const VOL_MIN_DEG = -130, VOL_MAX_DEG = 130;
+    const SCREEN_Y = 0.5; // gemeinsamer Y-Versatz für Bildschirm UND alle Trichter-Rahmenlagen
     let volumeKnobAngleDeg = VOL_MIN_DEG;
 
     async function init() {
@@ -232,7 +233,7 @@
         const geo = new THREE.ShapeGeometry(shape);
         const mat = new THREE.MeshStandardMaterial({ color, metalness, roughness, side: THREE.DoubleSide });
         const mesh = new THREE.Mesh(geo, mat);
-        mesh.position.z = z;
+        mesh.position.set(0, SCREEN_Y, z);
         return mesh;
     }
 
@@ -305,7 +306,7 @@
         screenTexture = new THREE.CanvasTexture(screenCanvas);
 
         screenMesh = new THREE.Mesh(screenGeo, new THREE.MeshBasicMaterial({ map: screenTexture }));
-        screenMesh.position.set(0, 0.5, 1.55);
+        screenMesh.position.set(0, SCREEN_Y, 1.55);
         screenMesh.userData = { type: 'openChannelList' };
         scene.add(screenMesh);
         interactiveObjects.push(screenMesh);
