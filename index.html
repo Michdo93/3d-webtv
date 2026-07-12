@@ -270,6 +270,34 @@
         return mesh;
     }
 
+    // Echte geneigte Blende (kein flaches Plattenpaar): 4 schräge Flächen, die vom Gold-Ring
+    // außen zur Bildebene innen überleiten - das erzeugt den "nach innen gewölbt"-Effekt
+    // aus dem Referenzbild statt einer weiteren flachen Stufe.
+    function buildBevelFrustum(outerW, outerH, zOuter, innerW, innerH, zInner, color, metalness, roughness) {
+        const ow = outerW / 2, oh = outerH / 2, iw = innerW / 2, ih = innerH / 2;
+        const positions = new Float32Array([
+            // unten
+            -ow, -oh, zOuter, ow, -oh, zOuter, iw, -ih, zInner,
+            -ow, -oh, zOuter, iw, -ih, zInner, -iw, -ih, zInner,
+            // rechts
+            ow, -oh, zOuter, ow, oh, zOuter, iw, ih, zInner,
+            ow, -oh, zOuter, iw, ih, zInner, iw, -ih, zInner,
+            // oben
+            ow, oh, zOuter, -ow, oh, zOuter, -iw, ih, zInner,
+            ow, oh, zOuter, -iw, ih, zInner, iw, ih, zInner,
+            // links
+            -ow, oh, zOuter, -ow, -oh, zOuter, -iw, -ih, zInner,
+            -ow, oh, zOuter, -iw, -ih, zInner, -iw, ih, zInner,
+        ]);
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        geo.computeVertexNormals();
+        const mat = new THREE.MeshStandardMaterial({ color, metalness, roughness, side: THREE.DoubleSide });
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.position.set(FUNNEL_X, SCREEN_Y, 0); // Z ist bereits absolut in den Vertices enthalten
+        return mesh;
+    }
+
     function buildTV() {
         const woodTex = createWoodTexture();
         const grilleTex = createGrilleTexture();
@@ -305,26 +333,27 @@
         divider.position.set(1.3, 0, bodyFrontZ + panelDepth / 2);
         scene.add(divider);
 
-        // --- Gestufter Trichter-Rahmen: Holz -> Schwarz -> Gold -> Aluminium -> Bildschirm.
-        // Bänder jetzt deutlich dicker, damit jede Farbe klar erkennbar ist. ---
-        const fWood = buildFunnelLayer(3.9, 2.35, 3.55, 2.02, CABINET_FRONT_Z + 0.05, 0xffffff, 0, 0.55);
+        // --- Rahmen: Holz -> Schwarz -> Gold (3 dünne, flache Ringe), danach eine ECHTE
+        // geneigte Blende (kein 4. flacher Ring mehr) direkt in die Bildebene. ---
+        const fWood = buildFunnelLayer(3.9, 2.35, 3.1, 1.62, CABINET_FRONT_Z + 0.05, 0xffffff, 0, 0.55);
         fWood.material.map = woodTex;
         scene.add(fWood);
         interactiveObjects.push(withOpenChannelList(fWood));
 
-        const fBlack = buildFunnelLayer(3.55, 2.02, 3.28, 1.82, CABINET_FRONT_Z, 0x141414, 0.1, 0.7);
+        const fBlack = buildFunnelLayer(3.1, 1.62, 2.9, 1.5, CABINET_FRONT_Z, 0x141414, 0.1, 0.7);
         scene.add(fBlack);
         interactiveObjects.push(withOpenChannelList(fBlack));
 
-        const fGold = buildFunnelLayer(3.28, 1.82, 3.0, 1.6, CABINET_FRONT_Z - 0.05, 0xd4af37, 0.8, 0.25);
+        const fGold = buildFunnelLayer(2.9, 1.5, 2.8, 1.44, CABINET_FRONT_Z - 0.05, 0xd4af37, 0.8, 0.25);
         scene.add(fGold);
         interactiveObjects.push(withOpenChannelList(fGold));
 
-        const fAlu = buildFunnelLayer(3.0, 1.6, 2.62, 1.36, CABINET_FRONT_Z - 0.1, 0xc2c6ca, 0.85, 0.22);
-        scene.add(fAlu);
-        interactiveObjects.push(withOpenChannelList(fAlu));
+        // Geneigte Blende: vom Gold-Ring (außen, z=0.65) schräg zurück zur Bildebene (innen, z=0.55)
+        const bevel = buildBevelFrustum(2.8, 1.44, CABINET_FRONT_Z - 0.05, 2.55, 1.31, CABINET_FRONT_Z - 0.15, 0xc2c6ca, 0.85, 0.22);
+        scene.add(bevel);
+        interactiveObjects.push(withOpenChannelList(bevel));
 
-        // Bildschirm (leicht konvex gewölbtes Glas, ganz hinten/innen im Trichter)
+        // Bildschirm (leicht konvex gewölbtes Glas, direkt hinter der geneigten Blende)
         const screenW = 2.5, screenH = 1.28;
         const screenGeo = new THREE.PlaneGeometry(screenW, screenH, 24, 14);
         const posAttr = screenGeo.attributes.position;
