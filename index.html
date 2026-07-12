@@ -171,6 +171,8 @@
         renderer.domElement.addEventListener('pointerdown', onPointerDown);
         window.addEventListener('pointermove', onPointerMove);
         window.addEventListener('pointerup', onPointerUp);
+        renderer.domElement.addEventListener('pointercancel', forceResetDragState);
+        window.addEventListener('blur', forceResetDragState);
         window.addEventListener('resize', onWindowResize);
 
         animate();
@@ -237,14 +239,16 @@
     function buildTV() {
         const woodTex = createWoodTexture();
 
-        // Gehäuse (Holzmaserung statt einfarbig)
+        // Gehäuse – WICHTIG: flach genug, dass die Vorderseite klar HINTER dem Bildschirm-Stack liegt
+        // (vorher: Tiefe 3.2 -> Vorderseite bei 1.6, das lag VOR dem Bildschirm bei 1.55 -> Bildschirm war verdeckt!)
+        const bodyDepth = 2.6; // Vorderseite bei 1.3
         const body = new THREE.Mesh(
-            new THREE.BoxGeometry(4.6, 3.4, 3.2),
+            new THREE.BoxGeometry(4.6, 3.4, bodyDepth),
             new THREE.MeshStandardMaterial({ map: woodTex, roughness: 0.55 })
         );
         scene.add(body);
 
-        // Abgerundete Gehäusekanten (vier vertikale Zylinder an den Vorderkanten)
+        // Abgerundete Gehäusekanten
         const edgeMat = new THREE.MeshStandardMaterial({ map: woodTex, roughness: 0.55 });
         const edgeL = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, 3.4, 16), edgeMat);
         edgeL.position.set(-2.3, 0, 0);
@@ -253,20 +257,36 @@
         edgeR.position.set(2.3, 0, 0);
         scene.add(edgeR);
 
-        // --- Gestufter Trichter-Rahmen: außen groß (dunkles Gehäuse-Niveau) -> innen klein (Bildröhre) ---
-        const funnelL0 = buildFunnelLayer(3.75, 2.25, 3.5, 2.05, 1.72, 0x2c2c2c, 0.3, 0.5);
-        scene.add(funnelL0);
-        interactiveObjects.push(withOpenChannelList(funnelL0));
+        // Vorstehendes Bedienpanel rechts (wie ein echtes seitliches Röhren-TV-Bedienfeld),
+        // flush mit der Gehäusevorderseite verbunden, trägt später die Regler
+        const ctrlX = 1.95;
+        const controlPanel = new THREE.Mesh(
+            new THREE.BoxGeometry(0.9, 3.2, 0.5),
+            new THREE.MeshStandardMaterial({ map: woodTex, roughness: 0.5 })
+        );
+        controlPanel.position.set(ctrlX, 0, 1.55); // 1.3 bis 1.8
+        scene.add(controlPanel);
 
-        const funnelL1 = buildFunnelLayer(3.5, 2.05, 3.32, 1.9, 1.665, 0xcfa030, 0.75, 0.3); // Messing-Zierring
-        scene.add(funnelL1);
+        // --- Gestufter Trichter-Rahmen (außen groß -> innen klein), Farben wie am echten Vintage-TV:
+        // Holz -> Schwarz -> Gold-Zierlinie -> gebürstetes Aluminium -> Bildschirm
+        const funnelWood = buildFunnelLayer(3.85, 2.35, 3.62, 2.15, 1.72, 0xffffff, 0, 0.55);
+        funnelWood.material.map = woodTex;
+        scene.add(funnelWood);
+        interactiveObjects.push(withOpenChannelList(funnelWood));
 
-        const funnelL2 = buildFunnelLayer(3.32, 1.9, 3.16, 1.78, 1.605, 0x1a1a1a, 0.2, 0.6);
-        scene.add(funnelL2);
-        interactiveObjects.push(withOpenChannelList(funnelL2));
+        const funnelBlack = buildFunnelLayer(3.62, 2.15, 3.42, 1.98, 1.67, 0x161616, 0.1, 0.7);
+        scene.add(funnelBlack);
+        interactiveObjects.push(withOpenChannelList(funnelBlack));
 
-        // Bildschirm (leicht konvex gewölbtes Glas, ganz hinten im Trichter)
-        const screenW = 3.05, screenH = 1.72;
+        const funnelGold = buildFunnelLayer(3.42, 1.98, 3.3, 1.9, 1.63, 0xd4af37, 0.8, 0.25); // Gold-Zierlinie
+        scene.add(funnelGold);
+
+        const funnelAlu = buildFunnelLayer(3.3, 1.9, 3.06, 1.74, 1.59, 0xb8bcc0, 0.85, 0.25); // gebürstetes Aluminium
+        scene.add(funnelAlu);
+        interactiveObjects.push(withOpenChannelList(funnelAlu));
+
+        // Bildschirm (leicht konvex gewölbtes Glas, ganz hinten/innen im Trichter)
+        const screenW = 3.0, screenH = 1.7;
         const screenGeo = new THREE.PlaneGeometry(screenW, screenH, 24, 14);
         const posAttr = screenGeo.attributes.position;
         for (let i = 0; i < posAttr.count; i++) {
@@ -307,8 +327,7 @@
         ledMesh.position.set(1.9, -0.9, 1.7);
         scene.add(ledMesh);
 
-        // --- Bedienelemente (rechte Leiste) ---
-        const ctrlX = 1.95;
+        // --- Bedienelemente (rechte Leiste, auf dem vorstehenden Bedienpanel) ---
         const chromeRingMat = () => new THREE.MeshStandardMaterial({ color: 0xcccccc, metalness: 0.85, roughness: 0.2 });
 
         // Power
@@ -742,14 +761,35 @@
                 dragStartY = event.clientY;
                 dragStartVolume = volume;
                 controls.enabled = false;
+                capturePointer(event);
                 break;
             case 'channelKnob':
                 isDraggingChannel = true;
                 dragStartX = event.clientX;
                 channelDragAccum = 0;
                 controls.enabled = false;
+                capturePointer(event);
                 break;
         }
+    }
+
+    // Pointer Capture: garantiert, dass move/up-Events beim Ziehen auch dann ankommen,
+    // wenn die Maus während des Ziehens den Canvas/das Fenster verlässt. Ohne das konnte
+    // controls.enabled im Extremfall dauerhaft auf "false" hängen bleiben (Kamera "eingefroren").
+    function capturePointer(event) {
+        try { renderer.domElement.setPointerCapture(event.pointerId); } catch (e) { /* ignorieren */ }
+    }
+    function releasePointerSafely(event) {
+        try {
+            if (event && event.pointerId != null && renderer.domElement.hasPointerCapture(event.pointerId)) {
+                renderer.domElement.releasePointerCapture(event.pointerId);
+            }
+        } catch (e) { /* ignorieren */ }
+    }
+    function forceResetDragState() {
+        isDraggingVolume = false;
+        isDraggingChannel = false;
+        controls.enabled = true;
     }
 
     function onPointerMove(event) {
@@ -791,7 +831,8 @@
         }
     }
 
-    function onPointerUp() {
+    function onPointerUp(event) {
+        releasePointerSafely(event);
         if (isDraggingVolume) { isDraggingVolume = false; controls.enabled = true; }
         if (isDraggingChannel) { isDraggingChannel = false; controls.enabled = true; }
     }
