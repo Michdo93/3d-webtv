@@ -1,0 +1,726 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Röhrenfernseher – WebTV</title>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background: #101012; font-family: 'Segoe UI', Tahoma, sans-serif; user-select: none; }
+        canvas { touch-action: none; }
+        #hud {
+            position: absolute; top: 16px; left: 16px;
+            color: #ccc; pointer-events: none; font-size: 0.9rem;
+            background: rgba(0,0,0,0.5); padding: 12px 16px; border-radius: 8px; line-height: 1.5; z-index: 10;
+        }
+        #hud span { color: #45c8ff; font-weight: bold; }
+        #instructions {
+            position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%);
+            color: #888; font-size: 0.8rem; text-align: center; pointer-events: none; z-index: 10;
+        }
+        #fullscreenBtn {
+            position: absolute; top: 16px; right: 16px; z-index: 20;
+            background: rgba(20,20,20,0.75); color: #fff; border: 1px solid #444; border-radius: 8px;
+            padding: 10px 16px; font-size: 0.95rem; cursor: pointer;
+        }
+        #fullscreenBtn:hover { background: rgba(69,200,255,0.25); border-color: #45c8ff; }
+
+        .modal-overlay {
+            position: fixed; inset: 0; background: rgba(0,0,0,0.85); backdrop-filter: blur(5px);
+            display: flex; justify-content: center; align-items: center;
+            opacity: 0; pointer-events: none; transition: opacity 0.25s ease; z-index: 100;
+        }
+        .modal-overlay.open { opacity: 1; pointer-events: auto; }
+        .modal-content {
+            background: #1e1e1e; width: 90%; max-width: 420px; height: 78vh; border-radius: 15px;
+            padding: 20px; display: flex; flex-direction: column; box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+        }
+        .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+        .modal-header h2 { margin: 0; font-size: 1.25rem; color: #fff; }
+        .close-btn { background: none; border: none; color: #999; font-size: 1.8rem; cursor: pointer; line-height: 1; }
+        .close-btn:hover { color: #fff; }
+        .search-input {
+            width: 100%; padding: 12px; background: #282828; border: 1px solid #444; border-radius: 8px;
+            color: #fff; font-size: 1rem; box-sizing: border-box; margin-bottom: 12px;
+        }
+        .search-input:focus { outline: 1px solid #45c8ff; }
+        .item-list { flex: 1; overflow-y: auto; text-align: left; }
+        .item-row { padding: 13px 10px; border-bottom: 1px solid #282828; cursor: pointer; border-radius: 5px; color: #ddd; display: flex; align-items: center; gap: 10px; }
+        .item-row img { width: 24px; height: 24px; object-fit: contain; }
+        .item-row:hover { background: #2a2a2a; }
+        .item-row.active { color: #45c8ff; font-weight: bold; background: #222; }
+        .item-list::-webkit-scrollbar { width: 6px; }
+        .item-list::-webkit-scrollbar-thumb { background-color: #444; border-radius: 3px; }
+    </style>
+</head>
+<body>
+
+<div id="hud">
+    TV-Status: <span id="status">Bereit</span><br>
+    Land: <span id="playlist-display">-</span> &nbsp;|&nbsp; Sender: <span id="channel-display">-</span><br>
+    Lautstärke: <span id="volume-display">50%</span>
+</div>
+
+<button id="fullscreenBtn" onclick="goFullscreen()">⛶ Vollbild (nur Video)</button>
+
+<div id="instructions">
+    Klick auf Bildschirm = Senderliste &nbsp;|&nbsp; Kanalrad ziehen = Sender wechseln &nbsp;|&nbsp; Lautstärkeknopf ziehen = Lautstärke &nbsp;|&nbsp; Rechtsklick+Ziehen: Kamera
+</div>
+
+<!-- Verstecktes Video-Element, dient als Textur-Quelle für den 3D-Bildschirm UND als echtes Element für den Vollbild-Button -->
+<video id="videoSource" muted playsinline style="position:fixed; top:0; left:0; width:2px; height:2px; opacity:0.01;"></video>
+
+<div class="modal-overlay" id="playlistModal" onclick="closeModalOnOverlay(event, 'playlistModal')">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h2>Land / Playlist wählen</h2>
+            <button class="close-btn" onclick="closeModal('playlistModal')">&times;</button>
+        </div>
+        <input type="text" class="search-input" id="playlistSearch" placeholder="Land suchen..." oninput="filterPlaylists()">
+        <div class="item-list" id="playlistList"></div>
+    </div>
+</div>
+
+<div class="modal-overlay" id="channelModal" onclick="closeModalOnOverlay(event, 'channelModal')">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h2>Sender wählen</h2>
+            <button class="close-btn" onclick="closeModal('channelModal')">&times;</button>
+        </div>
+        <input type="text" class="search-input" id="channelSearch" placeholder="Sender suchen..." oninput="filterChannels()">
+        <div class="item-list" id="channelList"></div>
+    </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+
+<script>
+    // ================= Daten =================
+    let scene, camera, renderer, controls, raycaster, pointer;
+    let playlists = [];      // [{ name, url }]
+    let channels = [];       // [{ name, logo, url }]
+    let currentPlaylistIndex = -1;
+    let currentChannelIndex = -1;
+    let hls = null;
+    let video;
+    let isPlaying = false, isMuted = true, volume = 0.5;
+    let loadId = 0;
+
+    // ================= 3D-Objekte =================
+    let screenMesh, screenTexture, screenCanvas, screenCtx;
+    let videoTexture;
+    let usingVideoTexture = false;
+
+    let powerBtnMesh, muteBtnMesh, playlistBtnMesh, channelListBtnMesh;
+    let volumeKnobMesh, channelKnobMesh;
+    let ledMesh;
+    let interactiveObjects = [];
+    let hoveredObject = null;
+
+    let isDraggingVolume = false;
+    let isDraggingChannel = false;
+    let dragStartY = 0, dragStartVolume = 0.5;
+    let dragStartX = 0, channelDragAccum = 0;
+    const CHANNEL_STEP_DEG = 22; // Grad pro "Kanal-Klick" am Wahlrad
+    const VOL_MIN_DEG = -130, VOL_MAX_DEG = 130;
+
+    async function init() {
+        scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x121214);
+
+        camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 100);
+        camera.position.set(0, 1.3, 5.5);
+
+        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        document.body.appendChild(renderer.domElement);
+
+        controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.minDistance = 3;
+        controls.maxDistance = 11;
+        controls.mouseButtons = { LEFT: null, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.ROTATE };
+
+        raycaster = new THREE.Raycaster();
+        pointer = new THREE.Vector2();
+
+        scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+        const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        dirLight.position.set(5, 10, 7);
+        scene.add(dirLight);
+
+        const floor = new THREE.Mesh(
+            new THREE.BoxGeometry(14, 0.1, 8),
+            new THREE.MeshStandardMaterial({ color: 0x1c1c1c, roughness: 0.9 })
+        );
+        floor.position.y = -2.05;
+        scene.add(floor);
+
+        video = document.getElementById('videoSource');
+        video.crossOrigin = 'anonymous';
+
+        buildTV();
+        await fetchPlaylists();
+
+        renderer.domElement.addEventListener('pointerdown', onPointerDown);
+        window.addEventListener('pointermove', onPointerMove);
+        window.addEventListener('pointerup', onPointerUp);
+        window.addEventListener('resize', onWindowResize);
+
+        animate();
+    }
+
+    // ================= Aufbau des 3D-Röhrenfernsehers =================
+    function buildTV() {
+        // Gehäuse (klobig, wie ein alter Röhren-TV)
+        const body = new THREE.Mesh(
+            new THREE.BoxGeometry(4.6, 3.4, 3.2),
+            new THREE.MeshStandardMaterial({ color: 0x4a4a4a, roughness: 0.55 })
+        );
+        body.position.set(0, 0, 0);
+        scene.add(body);
+
+        // Frontblende (leicht dunkler, mit Rand)
+        const bezel = new THREE.Mesh(
+            new THREE.BoxGeometry(4.3, 3.1, 0.15),
+            new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.4 })
+        );
+        bezel.position.set(0, 0.15, 1.6);
+        scene.add(bezel);
+
+        // Bildschirm (leicht dunkelgrau als "Glas", Video-Textur kommt später drauf)
+        screenCanvas = document.createElement('canvas');
+        screenCanvas.width = 640; screenCanvas.height = 360;
+        screenCtx = screenCanvas.getContext('2d');
+        screenTexture = new THREE.CanvasTexture(screenCanvas);
+        drawNoSignal();
+
+        screenMesh = new THREE.Mesh(
+            new THREE.PlaneGeometry(3.3, 1.86),
+            new THREE.MeshBasicMaterial({ map: screenTexture })
+        );
+        screenMesh.position.set(0, 0.45, 1.685);
+        screenMesh.userData = { type: 'openChannelList' };
+        scene.add(screenMesh);
+        interactiveObjects.push(screenMesh);
+
+        // Antenne (zwei schräge Zylinder), rein optisch
+        const antennaMat = new THREE.MeshStandardMaterial({ color: 0x888888, metalness: 0.6, roughness: 0.4 });
+        const ant1 = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 1.3, 8), antennaMat);
+        ant1.position.set(-0.4, 2.0, 0);
+        ant1.rotation.z = 0.35;
+        scene.add(ant1);
+        const ant2 = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 1.3, 8), antennaMat);
+        ant2.position.set(0.4, 2.0, 0);
+        ant2.rotation.z = -0.35;
+        scene.add(ant2);
+
+        // LED-Statusanzeige
+        ledMesh = new THREE.Mesh(
+            new THREE.SphereGeometry(0.05, 16, 16),
+            new THREE.MeshStandardMaterial({ color: 0x550000, emissive: 0x330000 })
+        );
+        ledMesh.position.set(1.9, -0.9, 1.7);
+        scene.add(ledMesh);
+
+        // --- Bedienelemente rechts neben dem Bildschirm ---
+        const ctrlX = 1.95;
+
+        powerBtnMesh = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.18, 0.18, 0.15, 32),
+            new THREE.MeshStandardMaterial({ color: 0x555555, roughness: 0.4 })
+        );
+        powerBtnMesh.rotation.x = Math.PI / 2;
+        powerBtnMesh.position.set(ctrlX, 1.15, 1.68);
+        powerBtnMesh.userData = { type: 'power', baseZ: 1.68, pressedZ: 1.62 };
+        scene.add(powerBtnMesh);
+        interactiveObjects.push(powerBtnMesh);
+
+        muteBtnMesh = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.14, 0.14, 0.15, 32),
+            new THREE.MeshStandardMaterial({ color: 0x555555, roughness: 0.4 })
+        );
+        muteBtnMesh.rotation.x = Math.PI / 2;
+        muteBtnMesh.position.set(ctrlX, 0.75, 1.68);
+        muteBtnMesh.userData = { type: 'mute', baseZ: 1.68, pressedZ: 1.62 };
+        scene.add(muteBtnMesh);
+        interactiveObjects.push(muteBtnMesh);
+
+        // Lautstärke-Drehregler
+        volumeKnobMesh = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.24, 0.24, 0.2, 32),
+            new THREE.MeshStandardMaterial({ color: 0x007acc, roughness: 0.3 })
+        );
+        volumeKnobMesh.rotation.x = Math.PI / 2;
+        volumeKnobMesh.position.set(ctrlX, 0.2, 1.7);
+        volumeKnobMesh.userData = { type: 'volumeKnob' };
+        scene.add(volumeKnobMesh);
+        interactiveObjects.push(volumeKnobMesh);
+
+        const volIndicator = new THREE.Mesh(
+            new THREE.BoxGeometry(0.03, 0.18, 0.03),
+            new THREE.MeshStandardMaterial({ color: 0xffffff })
+        );
+        volIndicator.position.set(0, 0.12, 0.11);
+        volumeKnobMesh.add(volIndicator);
+
+        // Kanal-Wahlrad
+        channelKnobMesh = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.26, 0.26, 0.22, 32),
+            new THREE.MeshStandardMaterial({ color: 0xe0a020, roughness: 0.3 })
+        );
+        channelKnobMesh.rotation.x = Math.PI / 2;
+        channelKnobMesh.position.set(ctrlX, -0.35, 1.71);
+        channelKnobMesh.userData = { type: 'channelKnob' };
+        scene.add(channelKnobMesh);
+        interactiveObjects.push(channelKnobMesh);
+
+        const chIndicator = new THREE.Mesh(
+            new THREE.BoxGeometry(0.03, 0.2, 0.03),
+            new THREE.MeshStandardMaterial({ color: 0x1a1a1a })
+        );
+        chIndicator.position.set(0, 0.13, 0.12);
+        channelKnobMesh.add(chIndicator);
+
+        // Playlist-Taste (Land wählen)
+        playlistBtnMesh = new THREE.Mesh(
+            new THREE.BoxGeometry(0.4, 0.22, 0.15),
+            new THREE.MeshStandardMaterial({ color: 0x444444, roughness: 0.4 })
+        );
+        playlistBtnMesh.position.set(ctrlX, -0.95, 1.68);
+        playlistBtnMesh.userData = { type: 'openPlaylist', baseZ: 1.68, pressedZ: 1.62 };
+        scene.add(playlistBtnMesh);
+        interactiveObjects.push(playlistBtnMesh);
+
+        // Senderliste-Taste
+        channelListBtnMesh = new THREE.Mesh(
+            new THREE.BoxGeometry(0.4, 0.22, 0.15),
+            new THREE.MeshStandardMaterial({ color: 0x444444, roughness: 0.4 })
+        );
+        channelListBtnMesh.position.set(ctrlX, -1.3, 1.68);
+        channelListBtnMesh.userData = { type: 'openChannelList', baseZ: 1.68, pressedZ: 1.62 };
+        scene.add(channelListBtnMesh);
+        interactiveObjects.push(channelListBtnMesh);
+
+        // Standfüße
+        const footMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a });
+        [[-1.9, -1.85, 1.3], [1.9, -1.85, 1.3], [-1.9, -1.85, -1.3], [1.9, -1.85, -1.3]].forEach(pos => {
+            const foot = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.14, 0.2, 16), footMat);
+            foot.position.set(pos[0], pos[1], pos[2]);
+            scene.add(foot);
+        });
+
+        updateVolumeKnobRotation();
+        redrawHUDText();
+    }
+
+    function drawNoSignal() {
+        const ctx = screenCtx;
+        ctx.fillStyle = '#001122';
+        ctx.fillRect(0, 0, 640, 360);
+        ctx.fillStyle = '#3388cc';
+        ctx.font = 'bold 28px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText('KEIN SIGNAL', 320, 165);
+        ctx.font = '16px monospace';
+        ctx.fillStyle = '#5599cc';
+        ctx.fillText('Klick auf den Bildschirm für die Senderliste', 320, 205);
+        screenTexture.needsUpdate = true;
+    }
+
+    function drawErrorScreen(msg) {
+        const ctx = screenCtx;
+        ctx.fillStyle = '#220000';
+        ctx.fillRect(0, 0, 640, 360);
+        ctx.fillStyle = '#ff5050';
+        ctx.font = 'bold 24px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText('WIEDERGABEFEHLER', 320, 160);
+        ctx.font = '15px monospace';
+        wrapCtxText(ctx, msg, 320, 195, 560, 20);
+        ctx.fillText('Versuche den "Vollbild"-Button oben rechts', 320, 250);
+        screenTexture.needsUpdate = true;
+    }
+
+    function wrapCtxText(ctx, text, x, y, maxWidth, lineHeight) {
+        const words = text.split(' ');
+        let line = '', curY = y;
+        for (let n = 0; n < words.length; n++) {
+            const testLine = line + words[n] + ' ';
+            if (ctx.measureText(testLine).width > maxWidth && n > 0) {
+                ctx.fillText(line, x, curY);
+                line = words[n] + ' ';
+                curY += lineHeight;
+            } else { line = testLine; }
+        }
+        ctx.fillText(line, x, curY);
+    }
+
+    function redrawHUDText() {
+        const pd = document.getElementById('playlist-display');
+        const cd = document.getElementById('channel-display');
+        if (pd) pd.innerText = currentPlaylistIndex >= 0 && playlists[currentPlaylistIndex] ? playlists[currentPlaylistIndex].name : '-';
+        if (cd) cd.innerText = currentChannelIndex >= 0 && channels[currentChannelIndex] ? channels[currentChannelIndex].name : '-';
+    }
+
+    function setStatus(msg) {
+        const el = document.getElementById('status');
+        if (el) el.innerText = msg;
+    }
+
+    function updateVolumeKnobRotation() {
+        if (!volumeKnobMesh) return;
+        const deg = VOL_MIN_DEG + volume * (VOL_MAX_DEG - VOL_MIN_DEG);
+        volumeKnobMesh.rotation.z = THREE.MathUtils.degToRad(deg);
+    }
+
+    function setVolume(v) {
+        volume = Math.max(0, Math.min(1, v));
+        video.volume = volume;
+        const vd = document.getElementById('volume-display');
+        if (vd) vd.innerText = `${Math.round(volume * 100)}%`;
+        updateVolumeKnobRotation();
+    }
+
+    // ================= Playlists (Länder) laden – wie im Original-Projekt =================
+    async function fetchPlaylists() {
+        setStatus('Lade Playlists...');
+        const apiUrl = 'https://api.github.com/repos/Free-TV/IPTV/contents/playlists';
+        try {
+            const response = await fetch(apiUrl);
+            const files = await response.json();
+            const m3u8Files = files.filter(f => f.name.endsWith('.m3u8'));
+            playlists = m3u8Files.map(f => ({
+                name: f.name.replace('playlist_', '').replace('.m3u8', '').toUpperCase(),
+                url: f.download_url
+            }));
+            renderPlaylistList(playlists);
+            setStatus('Bereit – Playlist wählen');
+        } catch (e) {
+            console.error('Fehler beim Laden der Playlists:', e);
+            setStatus('Fehler beim Laden der Playlists');
+        }
+    }
+
+    async function selectPlaylist(index) {
+        if (index < 0 || index >= playlists.length) return;
+        currentPlaylistIndex = index;
+        redrawHUDText();
+        setStatus('Parsing Sender...');
+        channels = [];
+        currentChannelIndex = -1;
+
+        try {
+            const res = await fetch(playlists[index].url);
+            const text = await res.text();
+            channels = parseM3U8(text);
+            renderChannelList(channels);
+            setStatus('Bereit – Sender wählen');
+        } catch (e) {
+            console.error('Fehler beim Parsen der Playlist:', e);
+            setStatus('Fehler beim Parsen der Playlist');
+        }
+        redrawHUDText();
+    }
+
+    function parseM3U8(text) {
+        const lines = text.split('\n');
+        const result = [];
+        for (let i = 0; i < lines.length; i++) {
+            let line = lines[i].trim();
+            if (line.startsWith('#EXTINF:')) {
+                const nameMatch = line.match(/tvg-name="([^"]+)"/);
+                const logoMatch = line.match(/tvg-logo="([^"]+)"/);
+                const commaIndex = line.lastIndexOf(',');
+                let displayName = commaIndex !== -1 ? line.substring(commaIndex + 1).trim() : 'Unbekannter Sender';
+                if (nameMatch && !displayName) displayName = nameMatch[1];
+
+                let urlLine = '';
+                for (let j = i + 1; j < lines.length; j++) {
+                    let nextLine = lines[j].trim();
+                    if (nextLine && !nextLine.startsWith('#')) {
+                        urlLine = nextLine;
+                        i = j;
+                        break;
+                    }
+                }
+                if (urlLine) result.push({ name: displayName, logo: logoMatch ? logoMatch[1] : '', url: urlLine });
+            }
+        }
+        return result;
+    }
+
+    // ================= Wiedergabe =================
+    function selectChannel(index, autoplay = true) {
+        if (index < 0 || index >= channels.length) return;
+        currentChannelIndex = index;
+        redrawHUDText();
+        highlightActiveChannel(index);
+        if (autoplay) playStream(channels[index].url);
+    }
+
+    function playStream(url) {
+        const myLoadId = ++loadId;
+        setStatus('Verbinde Stream...');
+
+        if (Hls.isSupported()) {
+            if (hls) { hls.destroy(); hls = null; }
+            hls = new Hls();
+            hls.loadSource(url);
+            hls.attachMedia(video);
+            hls.on(Hls.Events.MANIFEST_PARSED, function () {
+                if (myLoadId !== loadId) return;
+                video.play().then(() => onPlaybackStarted(myLoadId)).catch(err => onPlaybackError(myLoadId, err));
+            });
+            hls.on(Hls.Events.ERROR, function (event, data) {
+                if (myLoadId !== loadId) return;
+                if (data.fatal) onPlaybackError(myLoadId, new Error(data.type + ': ' + data.details));
+            });
+        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+            video.src = url;
+            video.addEventListener('loadedmetadata', function onMeta() {
+                video.removeEventListener('loadedmetadata', onMeta);
+                if (myLoadId !== loadId) return;
+                video.play().then(() => onPlaybackStarted(myLoadId)).catch(err => onPlaybackError(myLoadId, err));
+            });
+        } else {
+            onPlaybackError(myLoadId, new Error('HLS wird von diesem Browser nicht unterstützt'));
+        }
+    }
+
+    function onPlaybackStarted(myLoadId) {
+        if (myLoadId !== loadId) return;
+        isPlaying = true;
+        powerBtnMesh.material.color.setHex(0x1db954);
+        ledMesh.material.color.setHex(0x00ff00);
+        ledMesh.material.emissive.setHex(0x00aa00);
+        setStatus('Spielt live');
+        attachVideoTexture();
+    }
+
+    function onPlaybackError(myLoadId, err) {
+        if (myLoadId !== loadId) return;
+        console.error(err);
+        isPlaying = false;
+        powerBtnMesh.material.color.setHex(0x555555);
+        ledMesh.material.color.setHex(0x550000);
+        ledMesh.material.emissive.setHex(0x330000);
+        setStatus('Fehler beim Abspielen');
+        drawErrorScreen(String(err.message || err));
+    }
+
+    function attachVideoTexture() {
+        if (usingVideoTexture) return;
+        try {
+            videoTexture = new THREE.VideoTexture(video);
+            videoTexture.minFilter = THREE.LinearFilter;
+            videoTexture.magFilter = THREE.LinearFilter;
+            screenMesh.material.map = videoTexture;
+            screenMesh.material.needsUpdate = true;
+            usingVideoTexture = true;
+        } catch (e) {
+            console.warn('Video-Textur konnte nicht angehängt werden (evtl. CORS):', e);
+            drawErrorScreen('Sender evtl. nicht anzeigbar (CORS). Ton läuft weiter – nutze "Vollbild".');
+        }
+    }
+
+    function togglePower() {
+        if (isPlaying) {
+            video.pause();
+            isPlaying = false;
+            powerBtnMesh.material.color.setHex(0x555555);
+            ledMesh.material.color.setHex(0x550000);
+            ledMesh.material.emissive.setHex(0x330000);
+            setStatus('Pausiert');
+        } else {
+            if (currentChannelIndex < 0 && channels.length > 0) { selectChannel(0, true); return; }
+            if (!video.src && !hls) { if (currentChannelIndex >= 0) playStream(channels[currentChannelIndex].url); return; }
+            video.play().then(() => onPlaybackStarted(loadId)).catch(err => onPlaybackError(loadId, err));
+        }
+    }
+
+    function toggleMute() {
+        isMuted = !isMuted;
+        video.muted = isMuted;
+        muteBtnMesh.material.color.setHex(isMuted ? 0xd11a2a : 0x555555);
+        muteBtnMesh.position.z = isMuted ? muteBtnMesh.userData.pressedZ : muteBtnMesh.userData.baseZ;
+    }
+
+    function nextChannel() {
+        if (channels.length === 0) return;
+        selectChannel((currentChannelIndex + 1) % channels.length, true);
+    }
+    function prevChannel() {
+        if (channels.length === 0) return;
+        selectChannel((currentChannelIndex - 1 + channels.length) % channels.length, true);
+    }
+
+    // ================= Vollbild (unabhängig vom 3D-Fernseher) =================
+    function goFullscreen() {
+        if (video.requestFullscreen) video.requestFullscreen();
+        else if (video.webkitRequestFullscreen) video.webkitRequestFullscreen();
+        else if (video.webkitEnterFullscreen) video.webkitEnterFullscreen(); // iOS Safari
+    }
+
+    // ================= Pointer-Interaktion =================
+    function updatePointer(event) {
+        pointer.x = (event.clientX / window.innerWidth) * 2 - 1;
+        pointer.y = -(event.clientY / window.innerHeight) * 2 + 1;
+    }
+
+    function pressAnim(mesh) {
+        if (!mesh.userData.baseZ) return;
+        mesh.position.z = mesh.userData.pressedZ;
+        setTimeout(() => { mesh.position.z = mesh.userData.baseZ; }, 120);
+    }
+
+    function onPointerDown(event) {
+        if (event.button !== 0) return;
+        updatePointer(event);
+        raycaster.setFromCamera(pointer, camera);
+        const intersects = raycaster.intersectObjects(interactiveObjects);
+        if (intersects.length === 0) return;
+
+        const obj = intersects[0].object;
+        const data = obj.userData;
+
+        switch (data.type) {
+            case 'power': togglePower(); pressAnim(obj); break;
+            case 'mute': toggleMute(); break;
+            case 'openPlaylist': openModal('playlistModal'); pressAnim(obj); break;
+            case 'openChannelList': openModal('channelModal'); if (data.baseZ) pressAnim(obj); break;
+            case 'volumeKnob':
+                isDraggingVolume = true;
+                dragStartY = event.clientY;
+                dragStartVolume = volume;
+                controls.enabled = false;
+                break;
+            case 'channelKnob':
+                isDraggingChannel = true;
+                dragStartX = event.clientX;
+                channelDragAccum = 0;
+                controls.enabled = false;
+                break;
+        }
+    }
+
+    function onPointerMove(event) {
+        if (isDraggingVolume) {
+            const delta = (dragStartY - event.clientY) / 200;
+            setVolume(dragStartVolume + delta);
+            return;
+        }
+        if (isDraggingChannel) {
+            const deltaX = event.clientX - dragStartX;
+            dragStartX = event.clientX;
+            channelDragAccum += deltaX;
+            channelKnobMesh.rotation.z -= deltaX * 0.02;
+            while (channelDragAccum >= CHANNEL_STEP_DEG) {
+                nextChannel();
+                channelDragAccum -= CHANNEL_STEP_DEG;
+            }
+            while (channelDragAccum <= -CHANNEL_STEP_DEG) {
+                prevChannel();
+                channelDragAccum += CHANNEL_STEP_DEG;
+            }
+            return;
+        }
+
+        updatePointer(event);
+        raycaster.setFromCamera(pointer, camera);
+        const intersects = raycaster.intersectObjects(interactiveObjects);
+        const obj = intersects.length > 0 ? intersects[0].object : null;
+        if (obj !== hoveredObject) {
+            if (hoveredObject && hoveredObject.material.emissive && hoveredObject !== ledMesh) {
+                hoveredObject.material.emissive.setHex(0x000000);
+            }
+            hoveredObject = obj;
+            if (hoveredObject && hoveredObject.material.emissive && hoveredObject.userData.type !== 'openChannelList') {
+                hoveredObject.material.emissive.setHex(0x222222);
+            }
+            renderer.domElement.style.cursor = obj ? 'pointer' : 'default';
+        }
+    }
+
+    function onPointerUp() {
+        if (isDraggingVolume) { isDraggingVolume = false; controls.enabled = true; }
+        if (isDraggingChannel) { isDraggingChannel = false; controls.enabled = true; }
+    }
+
+    // ================= Modals =================
+    function renderPlaylistList(list) {
+        const container = document.getElementById('playlistList');
+        container.innerHTML = '';
+        list.forEach(pl => {
+            const realIndex = playlists.findIndex(p => p.url === pl.url);
+            const div = document.createElement('div');
+            div.className = 'item-row' + (realIndex === currentPlaylistIndex ? ' active' : '');
+            div.innerText = pl.name;
+            div.onclick = () => { selectPlaylist(realIndex); closeModal('playlistModal'); };
+            container.appendChild(div);
+        });
+    }
+    function filterPlaylists() {
+        const q = document.getElementById('playlistSearch').value.toLowerCase();
+        renderPlaylistList(playlists.filter(p => p.name.toLowerCase().includes(q)));
+    }
+
+    function renderChannelList(list) {
+        const container = document.getElementById('channelList');
+        container.innerHTML = '';
+        list.forEach(ch => {
+            const realIndex = channels.findIndex(c => c.url === ch.url);
+            const div = document.createElement('div');
+            div.className = 'item-row' + (realIndex === currentChannelIndex ? ' active' : '');
+            if (ch.logo) {
+                const img = document.createElement('img');
+                img.src = ch.logo; img.onerror = () => { img.style.display = 'none'; };
+                div.appendChild(img);
+            }
+            const span = document.createElement('span');
+            span.innerText = ch.name;
+            div.appendChild(span);
+            div.onclick = () => { selectChannel(realIndex, true); closeModal('channelModal'); };
+            container.appendChild(div);
+        });
+    }
+    function highlightActiveChannel(index) {
+        const container = document.getElementById('channelList');
+        Array.from(container.children).forEach((child, i) => child.classList.toggle('active', i === index));
+    }
+    function filterChannels() {
+        const q = document.getElementById('channelSearch').value.toLowerCase();
+        renderChannelList(channels.filter(c => c.name.toLowerCase().includes(q)));
+    }
+
+    function openModal(id) {
+        document.getElementById(id).classList.add('open');
+        if (id === 'playlistModal') { document.getElementById('playlistSearch').value = ''; renderPlaylistList(playlists); document.getElementById('playlistSearch').focus(); }
+        if (id === 'channelModal') {
+            if (channels.length === 0) { openModal('playlistModal'); document.getElementById(id).classList.remove('open'); return; }
+            document.getElementById('channelSearch').value = ''; renderChannelList(channels); document.getElementById('channelSearch').focus();
+        }
+    }
+    function closeModal(id) { document.getElementById(id).classList.remove('open'); }
+    function closeModalOnOverlay(e, id) { if (e.target.id === id) closeModal(id); }
+
+    // ================= Render-Loop =================
+    function animate() {
+        requestAnimationFrame(animate);
+        controls.update();
+        if (usingVideoTexture && videoTexture) videoTexture.needsUpdate = true;
+        renderer.render(scene, camera);
+    }
+
+    function onWindowResize() {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    window.onload = init;
+</script>
+</body>
+</html>
