@@ -124,15 +124,20 @@
     let dragStartX = 0, channelDragAccum = 0;
     const CHANNEL_STEP_DEG = 22;
     const VOL_MIN_DEG = -130, VOL_MAX_DEG = 130;
-    const SCREEN_Y = 0.5; // gemeinsamer Y-Versatz für Bildschirm UND alle Trichter-Rahmenlagen
     let volumeKnobAngleDeg = VOL_MIN_DEG;
+
+    // ---- Layout-Konstanten (alles hier definiert, damit Bildschirm/Rahmen/Panel garantiert zueinander passen) ----
+    const SCREEN_Y = 0.35;      // gemeinsamer Y-Versatz für Bildschirm + alle Trichter-Rahmenlagen
+    const FUNNEL_X = -0.7;      // Bildschirm-Trichter ist nach links versetzt, Platz für Bedienpanel rechts
+    const CABINET_FRONT_Z = 0.7;
+    const CTRL_X = 2.0;         // Zentrum des Bedienpanels
 
     async function init() {
         scene = new THREE.Scene();
         scene.background = new THREE.Color(0x121214);
 
         camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 100);
-        camera.position.set(0, 1.3, 5.5);
+        camera.position.set(0, 1.1, 5.8);
 
         renderer = new THREE.WebGLRenderer({ antialias: true });
         renderer.setSize(window.innerWidth, window.innerHeight);
@@ -142,7 +147,7 @@
         controls = new THREE.OrbitControls(camera, renderer.domElement);
         controls.enableDamping = true;
         controls.minDistance = 3;
-        controls.maxDistance = 11;
+        controls.maxDistance = 12;
         controls.mouseButtons = { LEFT: null, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.ROTATE };
 
         raycaster = new THREE.Raycaster();
@@ -157,10 +162,10 @@
         scene.add(fillLight);
 
         const floor = new THREE.Mesh(
-            new THREE.BoxGeometry(14, 0.1, 8),
+            new THREE.BoxGeometry(16, 0.1, 8),
             new THREE.MeshStandardMaterial({ color: 0x1c1c1c, roughness: 0.9 })
         );
-        floor.position.y = -2.05;
+        floor.position.y = -1.85;
         scene.add(floor);
 
         video = document.getElementById('videoSource');
@@ -206,7 +211,30 @@
         }
         const tex = new THREE.CanvasTexture(c);
         tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-        tex.repeat.set(2, 2);
+        tex.repeat.set(2, 1.4);
+        return tex;
+    }
+
+    function createGrilleTexture() {
+        const c = document.createElement('canvas');
+        c.width = 128; c.height = 256;
+        const ctx = c.getContext('2d');
+        ctx.fillStyle = '#3a2410';
+        ctx.fillRect(0, 0, 128, 256);
+        for (let y = 0; y < 256; y += 6) {
+            ctx.fillStyle = (y / 6) % 2 === 0 ? '#241708' : '#4a2f14';
+            ctx.fillRect(0, y, 128, 3);
+        }
+        // leichte vertikale Schattierung für Tiefe
+        const grad = ctx.createLinearGradient(0, 0, 128, 0);
+        grad.addColorStop(0, 'rgba(0,0,0,0.35)');
+        grad.addColorStop(0.5, 'rgba(0,0,0,0)');
+        grad.addColorStop(1, 'rgba(0,0,0,0.35)');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, 128, 256);
+        const tex = new THREE.CanvasTexture(c);
+        tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+        tex.repeat.set(1, 2);
         return tex;
     }
 
@@ -233,67 +261,83 @@
         const geo = new THREE.ShapeGeometry(shape);
         const mat = new THREE.MeshStandardMaterial({ color, metalness, roughness, side: THREE.DoubleSide });
         const mesh = new THREE.Mesh(geo, mat);
-        mesh.position.set(0, SCREEN_Y, z);
+        mesh.position.set(FUNNEL_X, SCREEN_Y, z);
+        return mesh;
+    }
+
+    function withOpenChannelList(mesh) {
+        mesh.userData = { type: 'openChannelList' };
         return mesh;
     }
 
     function buildTV() {
         const woodTex = createWoodTexture();
+        const grilleTex = createGrilleTexture();
 
-        // Gehäuse – WICHTIG: flach genug, dass die Vorderseite klar HINTER dem Bildschirm-Stack liegt
-        // (vorher: Tiefe 3.2 -> Vorderseite bei 1.6, das lag VOR dem Bildschirm bei 1.55 -> Bildschirm war verdeckt!)
-        const bodyDepth = 2.6; // Vorderseite bei 1.3
+        // --- Gehäuse: breiter und flacher, damit links der Bildschirm-Trichter UND rechts ein
+        // eigenständiges Bedienpanel Platz haben (vorher zu schmal -> alles quetschte sich) ---
+        const cabinetWidth = 5.8, cabinetHeight = 3.0, cabinetDepth = 1.4;
         const body = new THREE.Mesh(
-            new THREE.BoxGeometry(4.6, 3.4, bodyDepth),
+            new THREE.BoxGeometry(cabinetWidth, cabinetHeight, cabinetDepth),
             new THREE.MeshStandardMaterial({ map: woodTex, roughness: 0.55 })
         );
-        scene.add(body);
+        scene.add(body); // Vorderseite bei z = CABINET_FRONT_Z (0.7)
 
         // Abgerundete Gehäusekanten
         const edgeMat = new THREE.MeshStandardMaterial({ map: woodTex, roughness: 0.55 });
-        const edgeL = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, 3.4, 16), edgeMat);
-        edgeL.position.set(-2.3, 0, 0);
+        const edgeL = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, cabinetHeight, 16), edgeMat);
+        edgeL.position.set(-cabinetWidth / 2, 0, 0);
         scene.add(edgeL);
-        const edgeR = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, 3.4, 16), edgeMat);
-        edgeR.position.set(2.3, 0, 0);
+        const edgeR = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, cabinetHeight, 16), edgeMat);
+        edgeR.position.set(cabinetWidth / 2, 0, 0);
         scene.add(edgeR);
 
-        // Vorstehendes Bedienpanel rechts (wie ein echtes seitliches Röhren-TV-Bedienfeld),
-        // flush mit der Gehäusevorderseite verbunden, trägt später die Regler
-        const ctrlX = 1.95;
+        // --- Bedienpanel: eigene Rippen-Textur, direkt neben dem Trichter, flush mit dem Gehäuse,
+        // nur leicht vorstehend (kein "schwebender Klotz mit Lücke" mehr) ---
+        const panelDepth = 0.25;
         const controlPanel = new THREE.Mesh(
-            new THREE.BoxGeometry(0.9, 3.2, 0.5),
-            new THREE.MeshStandardMaterial({ map: woodTex, roughness: 0.5 })
+            new THREE.BoxGeometry(1.4, cabinetHeight - 0.15, panelDepth),
+            new THREE.MeshStandardMaterial({ map: grilleTex, roughness: 0.7 })
         );
-        controlPanel.position.set(ctrlX, 0, 1.55); // 1.3 bis 1.8
+        controlPanel.position.set(CTRL_X, 0, CABINET_FRONT_Z + panelDepth / 2); // 0.7 bis 0.95
         scene.add(controlPanel);
+        const panelFrontZ = CABINET_FRONT_Z + panelDepth; // 0.95
 
-        // --- Gestufter Trichter-Rahmen (außen groß -> innen klein), Farben wie am echten Vintage-TV:
-        // Holz -> Schwarz -> Gold-Zierlinie -> gebürstetes Aluminium -> Bildschirm
-        const funnelWood = buildFunnelLayer(3.85, 2.35, 3.62, 2.15, 1.72, 0xffffff, 0, 0.55);
-        funnelWood.material.map = woodTex;
-        scene.add(funnelWood);
-        interactiveObjects.push(withOpenChannelList(funnelWood));
+        // Dünner Holzsteg zwischen Trichter und Bedienpanel (schließt die Lücke sauber)
+        const divider = new THREE.Mesh(
+            new THREE.BoxGeometry(0.08, cabinetHeight - 0.1, cabinetDepth * 0.9),
+            new THREE.MeshStandardMaterial({ map: woodTex, roughness: 0.55 })
+        );
+        divider.position.set(1.3, 0, 0);
+        scene.add(divider);
 
-        const funnelBlack = buildFunnelLayer(3.62, 2.15, 3.42, 1.98, 1.67, 0x161616, 0.1, 0.7);
-        scene.add(funnelBlack);
-        interactiveObjects.push(withOpenChannelList(funnelBlack));
+        // --- Gestufter Trichter-Rahmen: Holz -> Schwarz -> Gold -> Aluminium -> Bildschirm.
+        // Bänder jetzt deutlich dicker, damit jede Farbe klar erkennbar ist. ---
+        const fWood = buildFunnelLayer(3.9, 2.35, 3.55, 2.02, CABINET_FRONT_Z + 0.05, 0xffffff, 0, 0.55);
+        fWood.material.map = woodTex;
+        scene.add(fWood);
+        interactiveObjects.push(withOpenChannelList(fWood));
 
-        const funnelGold = buildFunnelLayer(3.42, 1.98, 3.3, 1.9, 1.63, 0xd4af37, 0.8, 0.25); // Gold-Zierlinie
-        scene.add(funnelGold);
+        const fBlack = buildFunnelLayer(3.55, 2.02, 3.28, 1.82, CABINET_FRONT_Z, 0x141414, 0.1, 0.7);
+        scene.add(fBlack);
+        interactiveObjects.push(withOpenChannelList(fBlack));
 
-        const funnelAlu = buildFunnelLayer(3.3, 1.9, 3.06, 1.74, 1.59, 0xb8bcc0, 0.85, 0.25); // gebürstetes Aluminium
-        scene.add(funnelAlu);
-        interactiveObjects.push(withOpenChannelList(funnelAlu));
+        const fGold = buildFunnelLayer(3.28, 1.82, 3.0, 1.6, CABINET_FRONT_Z - 0.05, 0xd4af37, 0.8, 0.25);
+        scene.add(fGold);
+        interactiveObjects.push(withOpenChannelList(fGold));
+
+        const fAlu = buildFunnelLayer(3.0, 1.6, 2.62, 1.36, CABINET_FRONT_Z - 0.1, 0xc2c6ca, 0.85, 0.22);
+        scene.add(fAlu);
+        interactiveObjects.push(withOpenChannelList(fAlu));
 
         // Bildschirm (leicht konvex gewölbtes Glas, ganz hinten/innen im Trichter)
-        const screenW = 3.0, screenH = 1.7;
+        const screenW = 2.5, screenH = 1.28;
         const screenGeo = new THREE.PlaneGeometry(screenW, screenH, 24, 14);
         const posAttr = screenGeo.attributes.position;
         for (let i = 0; i < posAttr.count; i++) {
             const x = posAttr.getX(i), y = posAttr.getY(i);
             const d2 = (x / (screenW / 2)) ** 2 + (y / (screenH / 2)) ** 2;
-            const bulge = Math.max(0, 1 - d2) * 0.045;
+            const bulge = Math.max(0, 1 - d2) * 0.04;
             posAttr.setZ(i, bulge);
         }
         posAttr.needsUpdate = true;
@@ -306,7 +350,7 @@
         screenTexture = new THREE.CanvasTexture(screenCanvas);
 
         screenMesh = new THREE.Mesh(screenGeo, new THREE.MeshBasicMaterial({ map: screenTexture }));
-        screenMesh.position.set(0, SCREEN_Y, 1.55);
+        screenMesh.position.set(FUNNEL_X, SCREEN_Y, CABINET_FRONT_Z - 0.15);
         screenMesh.userData = { type: 'openChannelList' };
         scene.add(screenMesh);
         interactiveObjects.push(screenMesh);
@@ -314,10 +358,10 @@
         // Antenne
         const antennaMat = new THREE.MeshStandardMaterial({ color: 0xaaaaaa, metalness: 0.7, roughness: 0.3 });
         const ant1 = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 1.3, 8), antennaMat);
-        ant1.position.set(-0.4, 2.0, 0); ant1.rotation.z = 0.35;
+        ant1.position.set(FUNNEL_X - 0.35, 1.85, 0); ant1.rotation.z = 0.35;
         scene.add(ant1);
         const ant2 = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 1.3, 8), antennaMat);
-        ant2.position.set(0.4, 2.0, 0); ant2.rotation.z = -0.35;
+        ant2.position.set(FUNNEL_X + 0.35, 1.85, 0); ant2.rotation.z = -0.35;
         scene.add(ant2);
 
         // Status-LED
@@ -325,44 +369,42 @@
             new THREE.SphereGeometry(0.05, 16, 16),
             new THREE.MeshStandardMaterial({ color: 0x550000, emissive: 0x330000 })
         );
-        ledMesh.position.set(1.9, -0.9, 1.7);
+        ledMesh.position.set(CTRL_X, -1.15, panelFrontZ);
         scene.add(ledMesh);
 
-        // --- Bedienelemente (rechte Leiste, auf dem vorstehenden Bedienpanel) ---
+        // --- Bedienelemente auf dem Panel ---
         const chromeRingMat = () => new THREE.MeshStandardMaterial({ color: 0xcccccc, metalness: 0.85, roughness: 0.2 });
 
-        // Power
         powerBtnMesh = new THREE.Mesh(
-            new THREE.CylinderGeometry(0.18, 0.18, 0.15, 32),
+            new THREE.CylinderGeometry(0.16, 0.16, 0.13, 32),
             new THREE.MeshStandardMaterial({ color: 0x666666, roughness: 0.4 })
         );
         powerBtnMesh.rotation.x = Math.PI / 2;
-        powerBtnMesh.position.set(ctrlX, 1.15, 1.68);
-        powerBtnMesh.userData = { type: 'power', baseZ: 1.68, pressedZ: 1.62 };
+        powerBtnMesh.position.set(CTRL_X, 1.0, panelFrontZ);
+        powerBtnMesh.userData = { type: 'power', baseZ: panelFrontZ, pressedZ: panelFrontZ - 0.06 };
         scene.add(powerBtnMesh);
         interactiveObjects.push(powerBtnMesh);
-        const powerRing = new THREE.Mesh(new THREE.TorusGeometry(0.19, 0.02, 8, 24), chromeRingMat());
+        const powerRing = new THREE.Mesh(new THREE.TorusGeometry(0.17, 0.018, 8, 24), chromeRingMat());
         powerRing.position.copy(powerBtnMesh.position); powerRing.position.z += 0.01;
         scene.add(powerRing);
 
-        // Mute
         muteBtnMesh = new THREE.Mesh(
-            new THREE.CylinderGeometry(0.14, 0.14, 0.15, 32),
+            new THREE.CylinderGeometry(0.13, 0.13, 0.13, 32),
             new THREE.MeshStandardMaterial({ color: 0x666666, roughness: 0.4 })
         );
         muteBtnMesh.rotation.x = Math.PI / 2;
-        muteBtnMesh.position.set(ctrlX, 0.75, 1.68);
-        muteBtnMesh.userData = { type: 'mute', baseZ: 1.68, pressedZ: 1.62 };
+        muteBtnMesh.position.set(CTRL_X, 0.63, panelFrontZ);
+        muteBtnMesh.userData = { type: 'mute', baseZ: panelFrontZ, pressedZ: panelFrontZ - 0.06 };
         scene.add(muteBtnMesh);
         interactiveObjects.push(muteBtnMesh);
 
-        // --- Lautstärke-Drehregler: ungedrehte Gruppe trägt die Rotation um die Blickachse (Z) ---
+        // Lautstärke-Drehregler
         volumeKnobGroup = new THREE.Group();
-        volumeKnobGroup.position.set(ctrlX, 0.2, 1.7);
+        volumeKnobGroup.position.set(CTRL_X, 0.1, panelFrontZ + 0.02);
         scene.add(volumeKnobGroup);
 
         const volBody = new THREE.Mesh(
-            new THREE.CylinderGeometry(0.24, 0.24, 0.2, 32),
+            new THREE.CylinderGeometry(0.2, 0.2, 0.17, 32),
             new THREE.MeshStandardMaterial({ color: 0x0077bb, roughness: 0.3 })
         );
         volBody.rotation.x = Math.PI / 2;
@@ -371,26 +413,26 @@
         interactiveObjects.push(volBody);
 
         const volPointer = new THREE.Mesh(
-            new THREE.BoxGeometry(0.05, 0.19, 0.05),
+            new THREE.BoxGeometry(0.045, 0.16, 0.045),
             new THREE.MeshStandardMaterial({ color: 0xffffff })
         );
-        volPointer.position.set(0, 0.2, 0.11); // sitzt am Rand des Knopfes, dreht sich mit der Gruppe
+        volPointer.position.set(0, 0.17, 0.095);
         volPointer.userData = { type: 'volumeKnob' };
         volumeKnobGroup.add(volPointer);
         interactiveObjects.push(volPointer);
 
-        const volRing = new THREE.Mesh(new THREE.TorusGeometry(0.26, 0.018, 8, 28), chromeRingMat());
+        const volRing = new THREE.Mesh(new THREE.TorusGeometry(0.22, 0.016, 8, 28), chromeRingMat());
         volRing.rotation.x = Math.PI / 2;
-        volRing.position.z = 0.1;
+        volRing.position.z = 0.085;
         volumeKnobGroup.add(volRing);
 
-        // --- Kanal-Wahlrad ---
+        // Kanal-Wahlrad
         channelKnobGroup = new THREE.Group();
-        channelKnobGroup.position.set(ctrlX, -0.35, 1.71);
+        channelKnobGroup.position.set(CTRL_X, -0.4, panelFrontZ + 0.03);
         scene.add(channelKnobGroup);
 
         const chBody = new THREE.Mesh(
-            new THREE.CylinderGeometry(0.27, 0.27, 0.22, 32),
+            new THREE.CylinderGeometry(0.23, 0.23, 0.19, 32),
             new THREE.MeshStandardMaterial({ color: 0xe0a020, roughness: 0.35 })
         );
         chBody.rotation.x = Math.PI / 2;
@@ -399,66 +441,59 @@
         interactiveObjects.push(chBody);
 
         const chPointer = new THREE.Mesh(
-            new THREE.BoxGeometry(0.05, 0.22, 0.05),
+            new THREE.BoxGeometry(0.045, 0.19, 0.045),
             new THREE.MeshStandardMaterial({ color: 0x1a1a1a })
         );
-        chPointer.position.set(0, 0.22, 0.12);
+        chPointer.position.set(0, 0.19, 0.105);
         chPointer.userData = { type: 'channelKnob' };
         channelKnobGroup.add(chPointer);
         interactiveObjects.push(chPointer);
 
-        const chRing = new THREE.Mesh(new THREE.TorusGeometry(0.29, 0.018, 8, 28), chromeRingMat());
+        const chRing = new THREE.Mesh(new THREE.TorusGeometry(0.25, 0.016, 8, 28), chromeRingMat());
         chRing.rotation.x = Math.PI / 2;
-        chRing.position.z = 0.11;
+        chRing.position.z = 0.095;
         channelKnobGroup.add(chRing);
 
         // Playlist-Taste (creme)
         playlistBtnMesh = new THREE.Mesh(
-            new THREE.BoxGeometry(0.4, 0.22, 0.15),
+            new THREE.BoxGeometry(0.34, 0.19, 0.13),
             new THREE.MeshStandardMaterial({ color: 0xd8c9a0, roughness: 0.5 })
         );
-        playlistBtnMesh.position.set(ctrlX, -0.95, 1.68);
-        playlistBtnMesh.userData = { type: 'openPlaylist', baseZ: 1.68, pressedZ: 1.62 };
+        playlistBtnMesh.position.set(CTRL_X, -0.9, panelFrontZ);
+        playlistBtnMesh.userData = { type: 'openPlaylist', baseZ: panelFrontZ, pressedZ: panelFrontZ - 0.06 };
         scene.add(playlistBtnMesh);
         interactiveObjects.push(playlistBtnMesh);
 
         // Senderlisten-Taste (creme)
         channelListBtnMesh = new THREE.Mesh(
-            new THREE.BoxGeometry(0.4, 0.22, 0.15),
+            new THREE.BoxGeometry(0.34, 0.19, 0.13),
             new THREE.MeshStandardMaterial({ color: 0xd8c9a0, roughness: 0.5 })
         );
-        channelListBtnMesh.position.set(ctrlX, -1.3, 1.68);
-        channelListBtnMesh.userData = { type: 'openChannelList', baseZ: 1.68, pressedZ: 1.62 };
+        channelListBtnMesh.position.set(CTRL_X, -1.2, panelFrontZ);
+        channelListBtnMesh.userData = { type: 'openChannelList', baseZ: panelFrontZ, pressedZ: panelFrontZ - 0.06 };
         scene.add(channelListBtnMesh);
         interactiveObjects.push(channelListBtnMesh);
 
-        // Standfüße (getaperte Beine, Messing-Kappen)
-        [[-1.9, 1.3], [1.9, 1.3], [-1.9, -1.3], [1.9, -1.3]].forEach(([x, z]) => {
+        // Standfüße
+        [[-2.3, 1.2], [2.3, 1.2], [-2.3, -1.2], [2.3, -1.2]].forEach(([x, z]) => {
             const leg = new THREE.Mesh(
                 new THREE.CylinderGeometry(0.09, 0.14, 0.3, 16),
                 new THREE.MeshStandardMaterial({ color: 0x2a1a0a, roughness: 0.6 })
             );
-            leg.position.set(x, -1.85, z);
+            leg.position.set(x, -1.65, z);
             scene.add(leg);
             const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 0.03, 16), chromeRingMat());
-            cap.position.set(x, -1.71, z);
+            cap.position.set(x, -1.51, z);
             scene.add(cap);
         });
 
         setVolume(volume);
-        updateChannelKnobRotation();
         drawNoSignal();
         redrawHUDText();
     }
 
-    function withOpenChannelList(mesh) {
-        mesh.userData = { type: 'openChannelList' };
-        return mesh;
-    }
-
     // ================= Bildschirm-Inhalt =================
     function drawNoSignal() {
-        // Wird vom Static-Noise in animate() weitergezeichnet; hier nur Erstinitialisierung
         drawStaticFrame();
     }
 
@@ -527,15 +562,9 @@
         if (el) el.innerText = msg;
     }
 
-    // ================= Regler-Rotation =================
     function updateVolumeKnobRotation() {
         if (!volumeKnobGroup) return;
         volumeKnobGroup.rotation.z = THREE.MathUtils.degToRad(volumeKnobAngleDeg);
-    }
-
-    function updateChannelKnobRotation() {
-        if (!channelKnobGroup) return;
-        // rein optisch: Winkel folgt der Zieh-Bewegung, keine feste Zielposition nötig
     }
 
     function setVolume(v) {
@@ -774,9 +803,6 @@
         }
     }
 
-    // Pointer Capture: garantiert, dass move/up-Events beim Ziehen auch dann ankommen,
-    // wenn die Maus während des Ziehens den Canvas/das Fenster verlässt. Ohne das konnte
-    // controls.enabled im Extremfall dauerhaft auf "false" hängen bleiben (Kamera "eingefroren").
     function capturePointer(event) {
         try { renderer.domElement.setPointerCapture(event.pointerId); } catch (e) { /* ignorieren */ }
     }
@@ -803,7 +829,6 @@
             const deltaX = event.clientX - dragStartX;
             dragStartX = event.clientX;
             channelDragAccum += deltaX;
-            // Zeiger dreht sich sichtbar im Uhrzeigersinn/gegen den Uhrzeigersinn um die Blickachse
             channelKnobGroup.rotation.z -= THREE.MathUtils.degToRad(deltaX * 0.6);
             while (channelDragAccum >= CHANNEL_STEP_DEG) {
                 nextChannel();
@@ -904,7 +929,7 @@
             videoTexture.needsUpdate = true;
         } else {
             noiseFrameCounter++;
-            if (noiseFrameCounter % 2 === 0) drawStaticFrame(); // dezent gedrosselt
+            if (noiseFrameCounter % 2 === 0) drawStaticFrame();
         }
 
         renderer.render(scene, camera);
