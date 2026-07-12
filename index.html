@@ -276,12 +276,15 @@
 
         // --- Gehäuse: breiter und flacher, damit links der Bildschirm-Trichter UND rechts ein
         // eigenständiges Bedienpanel Platz haben (vorher zu schmal -> alles quetschte sich) ---
-        const cabinetWidth = 5.8, cabinetHeight = 3.0, cabinetDepth = 1.4;
+        const cabinetWidth = 5.8, cabinetHeight = 3.0, cabinetDepth = 1.15;
+        const bodyZ = -0.5; // Gehäuse bewusst nach hinten versetzt
         const body = new THREE.Mesh(
             new THREE.BoxGeometry(cabinetWidth, cabinetHeight, cabinetDepth),
             new THREE.MeshStandardMaterial({ map: woodTex, roughness: 0.55 })
         );
-        scene.add(body); // Vorderseite bei z = CABINET_FRONT_Z (0.7)
+        body.position.z = bodyZ;
+        const bodyFrontZ = bodyZ + cabinetDepth / 2; // 0.075 -> klar HINTER dem gesamten Trichter+Bildschirm-Stapel (0.55-0.75)
+        scene.add(body);
 
         // Abgerundete Gehäusekanten
         const edgeMat = new THREE.MeshStandardMaterial({ map: woodTex, roughness: 0.55 });
@@ -292,23 +295,23 @@
         edgeR.position.set(cabinetWidth / 2, 0, 0);
         scene.add(edgeR);
 
-        // --- Bedienpanel: eigene Rippen-Textur, direkt neben dem Trichter, flush mit dem Gehäuse,
-        // nur leicht vorstehend (kein "schwebender Klotz mit Lücke" mehr) ---
-        const panelDepth = 0.25;
+        // --- Bedienpanel: eigene Rippen-Textur, reicht jetzt lückenlos von der Gehäuse-Vorderseite
+        // bis zur Regler-Ebene vorn (vorher: Panel hing mit Lücke in der Luft) ---
+        const panelFrontZ = 0.95;
+        const panelDepth = panelFrontZ - bodyFrontZ;
         const controlPanel = new THREE.Mesh(
             new THREE.BoxGeometry(1.4, cabinetHeight - 0.15, panelDepth),
             new THREE.MeshStandardMaterial({ map: grilleTex, roughness: 0.7 })
         );
-        controlPanel.position.set(CTRL_X, 0, CABINET_FRONT_Z + panelDepth / 2); // 0.7 bis 0.95
+        controlPanel.position.set(CTRL_X, 0, bodyFrontZ + panelDepth / 2);
         scene.add(controlPanel);
-        const panelFrontZ = CABINET_FRONT_Z + panelDepth; // 0.95
 
-        // Dünner Holzsteg zwischen Trichter und Bedienpanel (schließt die Lücke sauber)
+        // Dünner Holzsteg zwischen Trichter und Bedienpanel (schließt die Lücke sauber, gleiche Tiefe wie Panel)
         const divider = new THREE.Mesh(
-            new THREE.BoxGeometry(0.08, cabinetHeight - 0.1, cabinetDepth * 0.9),
+            new THREE.BoxGeometry(0.08, cabinetHeight - 0.1, panelDepth),
             new THREE.MeshStandardMaterial({ map: woodTex, roughness: 0.55 })
         );
-        divider.position.set(1.3, 0, 0);
+        divider.position.set(1.3, 0, bodyFrontZ + panelDepth / 2);
         scene.add(divider);
 
         // --- Gestufter Trichter-Rahmen: Holz -> Schwarz -> Gold -> Aluminium -> Bildschirm.
@@ -474,8 +477,8 @@
         scene.add(channelListBtnMesh);
         interactiveObjects.push(channelListBtnMesh);
 
-        // Standfüße
-        [[-2.3, 1.2], [2.3, 1.2], [-2.3, -1.2], [2.3, -1.2]].forEach(([x, z]) => {
+        // Standfüße (jetzt innerhalb der tatsächlichen, flacheren Gehäusetiefe)
+        [[-2.5, bodyZ + 0.3], [2.5, bodyZ + 0.3], [-2.5, bodyZ - 0.35], [2.5, bodyZ - 0.35]].forEach(([x, z]) => {
             const leg = new THREE.Mesh(
                 new THREE.CylinderGeometry(0.09, 0.14, 0.3, 16),
                 new THREE.MeshStandardMaterial({ color: 0x2a1a0a, roughness: 0.6 })
