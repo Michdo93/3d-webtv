@@ -128,16 +128,16 @@
 
     // ---- Layout-Konstanten (alles hier definiert, damit Bildschirm/Rahmen/Panel garantiert zueinander passen) ----
     const SCREEN_Y = 0.35;      // gemeinsamer Y-Versatz für Bildschirm + alle Trichter-Rahmenlagen
-    const FUNNEL_X = -0.7;      // Bildschirm-Trichter ist nach links versetzt, Platz für Bedienpanel rechts
+    const FUNNEL_X = -0.65;     // Bildschirm-Trichter ist nach links versetzt, Platz für Bedienpanel rechts
     const CABINET_FRONT_Z = 0.7;
-    const CTRL_X = 2.0;         // Zentrum des Bedienpanels
+    const CTRL_X = 2.05;        // Zentrum des Bedienpanels
 
     async function init() {
         scene = new THREE.Scene();
         scene.background = new THREE.Color(0x121214);
 
         camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 100);
-        camera.position.set(0, 1.1, 5.8);
+        camera.position.set(0, 1.1, 6.4);
 
         renderer = new THREE.WebGLRenderer({ antialias: true });
         renderer.setSize(window.innerWidth, window.innerHeight);
@@ -276,7 +276,7 @@
 
         // --- Gehäuse: breiter und flacher, damit links der Bildschirm-Trichter UND rechts ein
         // eigenständiges Bedienpanel Platz haben (vorher zu schmal -> alles quetschte sich) ---
-        const cabinetWidth = 5.8, cabinetHeight = 3.0, cabinetDepth = 1.15;
+        const cabinetWidth = 6.2, cabinetHeight = 3.0, cabinetDepth = 1.15;
         const bodyZ = -0.5; // Gehäuse bewusst nach hinten versetzt
         const body = new THREE.Mesh(
             new THREE.BoxGeometry(cabinetWidth, cabinetHeight, cabinetDepth),
@@ -285,15 +285,6 @@
         body.position.z = bodyZ;
         const bodyFrontZ = bodyZ + cabinetDepth / 2; // 0.075 -> klar HINTER dem gesamten Trichter+Bildschirm-Stapel (0.55-0.75)
         scene.add(body);
-
-        // Abgerundete Gehäusekanten
-        const edgeMat = new THREE.MeshStandardMaterial({ map: woodTex, roughness: 0.55 });
-        const edgeL = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, cabinetHeight, 16), edgeMat);
-        edgeL.position.set(-cabinetWidth / 2, 0, 0);
-        scene.add(edgeL);
-        const edgeR = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, cabinetHeight, 16), edgeMat);
-        edgeR.position.set(cabinetWidth / 2, 0, 0);
-        scene.add(edgeR);
 
         // --- Bedienpanel: eigene Rippen-Textur, reicht jetzt lückenlos von der Gehäuse-Vorderseite
         // bis zur Regler-Ebene vorn (vorher: Panel hing mit Lücke in der Luft) ---
@@ -477,8 +468,8 @@
         scene.add(channelListBtnMesh);
         interactiveObjects.push(channelListBtnMesh);
 
-        // Standfüße (jetzt innerhalb der tatsächlichen, flacheren Gehäusetiefe)
-        [[-2.5, bodyZ + 0.3], [2.5, bodyZ + 0.3], [-2.5, bodyZ - 0.35], [2.5, bodyZ - 0.35]].forEach(([x, z]) => {
+        // Standfüße (jetzt innerhalb der tatsächlichen, flacheren Gehäusetiefe und breiteren Front)
+        [[-2.7, bodyZ + 0.3], [2.7, bodyZ + 0.3], [-2.7, bodyZ - 0.35], [2.7, bodyZ - 0.35]].forEach(([x, z]) => {
             const leg = new THREE.Mesh(
                 new THREE.CylinderGeometry(0.09, 0.14, 0.3, 16),
                 new THREE.MeshStandardMaterial({ color: 0x2a1a0a, roughness: 0.6 })
