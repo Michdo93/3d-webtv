@@ -64,10 +64,9 @@
 <button id="fullscreenBtn" onclick="goFullscreen()">⛶ Vollbild (nur Video)</button>
 
 <div id="instructions">
-    Klick auf Bildschirm = Senderliste &nbsp;|&nbsp; Kanalrad ziehen = Sender wechseln &nbsp;|&nbsp; Lautstärkeknopf ziehen = Lautstärke &nbsp;|&nbsp; Rechtsklick+Ziehen: Kamera
+    Klick auf Bildschirm = Senderliste &nbsp;|&nbsp; Knopf ziehen = drehen (Kanal/Lautstärke) &nbsp;|&nbsp; Rechtsklick+Ziehen: Kamera
 </div>
 
-<!-- Verstecktes Video-Element, dient als Textur-Quelle für den 3D-Bildschirm UND als echtes Element für den Vollbild-Button -->
 <video id="videoSource" muted playsinline style="position:fixed; top:0; left:0; width:2px; height:2px; opacity:0.01;"></video>
 
 <div class="modal-overlay" id="playlistModal" onclick="closeModalOnOverlay(event, 'playlistModal')">
@@ -98,8 +97,8 @@
 <script>
     // ================= Daten =================
     let scene, camera, renderer, controls, raycaster, pointer;
-    let playlists = [];      // [{ name, url }]
-    let channels = [];       // [{ name, logo, url }]
+    let playlists = [];
+    let channels = [];
     let currentPlaylistIndex = -1;
     let currentChannelIndex = -1;
     let hls = null;
@@ -108,12 +107,13 @@
     let loadId = 0;
 
     // ================= 3D-Objekte =================
-    let screenMesh, screenTexture, screenCanvas, screenCtx;
+    let screenMesh, screenTexture, screenCanvas, screenCtx, noiseImageData;
     let videoTexture;
     let usingVideoTexture = false;
+    let noiseFrameCounter = 0;
 
     let powerBtnMesh, muteBtnMesh, playlistBtnMesh, channelListBtnMesh;
-    let volumeKnobMesh, channelKnobMesh;
+    let volumeKnobGroup, channelKnobGroup;
     let ledMesh;
     let interactiveObjects = [];
     let hoveredObject = null;
@@ -122,8 +122,9 @@
     let isDraggingChannel = false;
     let dragStartY = 0, dragStartVolume = 0.5;
     let dragStartX = 0, channelDragAccum = 0;
-    const CHANNEL_STEP_DEG = 22; // Grad pro "Kanal-Klick" am Wahlrad
+    const CHANNEL_STEP_DEG = 22;
     const VOL_MIN_DEG = -130, VOL_MAX_DEG = 130;
+    let volumeKnobAngleDeg = VOL_MIN_DEG;
 
     async function init() {
         scene = new THREE.Scene();
@@ -146,10 +147,13 @@
         raycaster = new THREE.Raycaster();
         pointer = new THREE.Vector2();
 
-        scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+        scene.add(new THREE.AmbientLight(0xffffff, 0.65));
         const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
         dirLight.position.set(5, 10, 7);
         scene.add(dirLight);
+        const fillLight = new THREE.DirectionalLight(0xffe0b0, 0.25);
+        fillLight.position.set(-6, 3, 4);
+        scene.add(fillLight);
 
         const floor = new THREE.Mesh(
             new THREE.BoxGeometry(14, 0.1, 8),
@@ -172,52 +176,130 @@
         animate();
     }
 
-    // ================= Aufbau des 3D-Röhrenfernsehers =================
+    // ================= Prozedurale Texturen =================
+    function createWoodTexture() {
+        const c = document.createElement('canvas');
+        c.width = 256; c.height = 256;
+        const ctx = c.getContext('2d');
+        const grad = ctx.createLinearGradient(0, 0, 256, 0);
+        grad.addColorStop(0, '#5a3a1c');
+        grad.addColorStop(0.35, '#8a5a2e');
+        grad.addColorStop(0.6, '#96632f');
+        grad.addColorStop(1, '#5a3a1c');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, 256, 256);
+
+        for (let i = 0; i < 55; i++) {
+            ctx.strokeStyle = Math.random() > 0.5 ? 'rgba(63,40,15,0.35)' : 'rgba(169,123,69,0.3)';
+            ctx.lineWidth = Math.random() * 1.8 + 0.4;
+            ctx.beginPath();
+            let y = Math.random() * 256;
+            ctx.moveTo(0, y);
+            for (let x = 0; x <= 256; x += 14) {
+                y += (Math.random() - 0.5) * 7;
+                ctx.lineTo(x, y);
+            }
+            ctx.stroke();
+        }
+        const tex = new THREE.CanvasTexture(c);
+        tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+        tex.repeat.set(2, 2);
+        return tex;
+    }
+
+    // ================= Röhrenfernseher-Gehäuse =================
+    function roundedRectShape(w, h, r) {
+        const shape = new THREE.Shape();
+        const x = -w / 2, y = -h / 2;
+        shape.moveTo(x + r, y);
+        shape.lineTo(x + w - r, y);
+        shape.quadraticCurveTo(x + w, y, x + w, y + r);
+        shape.lineTo(x + w, y + h - r);
+        shape.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+        shape.lineTo(x + r, y + h);
+        shape.quadraticCurveTo(x, y + h, x, y + h - r);
+        shape.lineTo(x, y + r);
+        shape.quadraticCurveTo(x, y, x + r, y);
+        return shape;
+    }
+
+    function buildFunnelLayer(outerW, outerH, innerW, innerH, z, color, metalness, roughness) {
+        const shape = roundedRectShape(outerW, outerH, 0.15);
+        const hole = roundedRectShape(innerW, innerH, 0.1);
+        shape.holes.push(hole);
+        const geo = new THREE.ShapeGeometry(shape);
+        const mat = new THREE.MeshStandardMaterial({ color, metalness, roughness, side: THREE.DoubleSide });
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.position.z = z;
+        return mesh;
+    }
+
     function buildTV() {
-        // Gehäuse (klobig, wie ein alter Röhren-TV)
+        const woodTex = createWoodTexture();
+
+        // Gehäuse (Holzmaserung statt einfarbig)
         const body = new THREE.Mesh(
             new THREE.BoxGeometry(4.6, 3.4, 3.2),
-            new THREE.MeshStandardMaterial({ color: 0x4a4a4a, roughness: 0.55 })
+            new THREE.MeshStandardMaterial({ map: woodTex, roughness: 0.55 })
         );
-        body.position.set(0, 0, 0);
         scene.add(body);
 
-        // Frontblende (leicht dunkler, mit Rand)
-        const bezel = new THREE.Mesh(
-            new THREE.BoxGeometry(4.3, 3.1, 0.15),
-            new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.4 })
-        );
-        bezel.position.set(0, 0.15, 1.6);
-        scene.add(bezel);
+        // Abgerundete Gehäusekanten (vier vertikale Zylinder an den Vorderkanten)
+        const edgeMat = new THREE.MeshStandardMaterial({ map: woodTex, roughness: 0.55 });
+        const edgeL = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, 3.4, 16), edgeMat);
+        edgeL.position.set(-2.3, 0, 0);
+        scene.add(edgeL);
+        const edgeR = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, 3.4, 16), edgeMat);
+        edgeR.position.set(2.3, 0, 0);
+        scene.add(edgeR);
 
-        // Bildschirm (leicht dunkelgrau als "Glas", Video-Textur kommt später drauf)
+        // --- Gestufter Trichter-Rahmen: außen groß (dunkles Gehäuse-Niveau) -> innen klein (Bildröhre) ---
+        const funnelL0 = buildFunnelLayer(3.75, 2.25, 3.5, 2.05, 1.72, 0x2c2c2c, 0.3, 0.5);
+        scene.add(funnelL0);
+        interactiveObjects.push(withOpenChannelList(funnelL0));
+
+        const funnelL1 = buildFunnelLayer(3.5, 2.05, 3.32, 1.9, 1.665, 0xcfa030, 0.75, 0.3); // Messing-Zierring
+        scene.add(funnelL1);
+
+        const funnelL2 = buildFunnelLayer(3.32, 1.9, 3.16, 1.78, 1.605, 0x1a1a1a, 0.2, 0.6);
+        scene.add(funnelL2);
+        interactiveObjects.push(withOpenChannelList(funnelL2));
+
+        // Bildschirm (leicht konvex gewölbtes Glas, ganz hinten im Trichter)
+        const screenW = 3.05, screenH = 1.72;
+        const screenGeo = new THREE.PlaneGeometry(screenW, screenH, 24, 14);
+        const posAttr = screenGeo.attributes.position;
+        for (let i = 0; i < posAttr.count; i++) {
+            const x = posAttr.getX(i), y = posAttr.getY(i);
+            const d2 = (x / (screenW / 2)) ** 2 + (y / (screenH / 2)) ** 2;
+            const bulge = Math.max(0, 1 - d2) * 0.045;
+            posAttr.setZ(i, bulge);
+        }
+        posAttr.needsUpdate = true;
+        screenGeo.computeVertexNormals();
+
         screenCanvas = document.createElement('canvas');
         screenCanvas.width = 640; screenCanvas.height = 360;
         screenCtx = screenCanvas.getContext('2d');
+        noiseImageData = screenCtx.createImageData(screenCanvas.width, screenCanvas.height);
         screenTexture = new THREE.CanvasTexture(screenCanvas);
-        drawNoSignal();
 
-        screenMesh = new THREE.Mesh(
-            new THREE.PlaneGeometry(3.3, 1.86),
-            new THREE.MeshBasicMaterial({ map: screenTexture })
-        );
-        screenMesh.position.set(0, 0.45, 1.685);
+        screenMesh = new THREE.Mesh(screenGeo, new THREE.MeshBasicMaterial({ map: screenTexture }));
+        screenMesh.position.set(0, 0.5, 1.55);
         screenMesh.userData = { type: 'openChannelList' };
         scene.add(screenMesh);
         interactiveObjects.push(screenMesh);
 
-        // Antenne (zwei schräge Zylinder), rein optisch
-        const antennaMat = new THREE.MeshStandardMaterial({ color: 0x888888, metalness: 0.6, roughness: 0.4 });
+        // Antenne
+        const antennaMat = new THREE.MeshStandardMaterial({ color: 0xaaaaaa, metalness: 0.7, roughness: 0.3 });
         const ant1 = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 1.3, 8), antennaMat);
-        ant1.position.set(-0.4, 2.0, 0);
-        ant1.rotation.z = 0.35;
+        ant1.position.set(-0.4, 2.0, 0); ant1.rotation.z = 0.35;
         scene.add(ant1);
         const ant2 = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 1.3, 8), antennaMat);
-        ant2.position.set(0.4, 2.0, 0);
-        ant2.rotation.z = -0.35;
+        ant2.position.set(0.4, 2.0, 0); ant2.rotation.z = -0.35;
         scene.add(ant2);
 
-        // LED-Statusanzeige
+        // Status-LED
         ledMesh = new THREE.Mesh(
             new THREE.SphereGeometry(0.05, 16, 16),
             new THREE.MeshStandardMaterial({ color: 0x550000, emissive: 0x330000 })
@@ -225,22 +307,28 @@
         ledMesh.position.set(1.9, -0.9, 1.7);
         scene.add(ledMesh);
 
-        // --- Bedienelemente rechts neben dem Bildschirm ---
+        // --- Bedienelemente (rechte Leiste) ---
         const ctrlX = 1.95;
+        const chromeRingMat = () => new THREE.MeshStandardMaterial({ color: 0xcccccc, metalness: 0.85, roughness: 0.2 });
 
+        // Power
         powerBtnMesh = new THREE.Mesh(
             new THREE.CylinderGeometry(0.18, 0.18, 0.15, 32),
-            new THREE.MeshStandardMaterial({ color: 0x555555, roughness: 0.4 })
+            new THREE.MeshStandardMaterial({ color: 0x666666, roughness: 0.4 })
         );
         powerBtnMesh.rotation.x = Math.PI / 2;
         powerBtnMesh.position.set(ctrlX, 1.15, 1.68);
         powerBtnMesh.userData = { type: 'power', baseZ: 1.68, pressedZ: 1.62 };
         scene.add(powerBtnMesh);
         interactiveObjects.push(powerBtnMesh);
+        const powerRing = new THREE.Mesh(new THREE.TorusGeometry(0.19, 0.02, 8, 24), chromeRingMat());
+        powerRing.position.copy(powerBtnMesh.position); powerRing.position.z += 0.01;
+        scene.add(powerRing);
 
+        // Mute
         muteBtnMesh = new THREE.Mesh(
             new THREE.CylinderGeometry(0.14, 0.14, 0.15, 32),
-            new THREE.MeshStandardMaterial({ color: 0x555555, roughness: 0.4 })
+            new THREE.MeshStandardMaterial({ color: 0x666666, roughness: 0.4 })
         );
         muteBtnMesh.rotation.x = Math.PI / 2;
         muteBtnMesh.position.set(ctrlX, 0.75, 1.68);
@@ -248,85 +336,128 @@
         scene.add(muteBtnMesh);
         interactiveObjects.push(muteBtnMesh);
 
-        // Lautstärke-Drehregler
-        volumeKnobMesh = new THREE.Mesh(
-            new THREE.CylinderGeometry(0.24, 0.24, 0.2, 32),
-            new THREE.MeshStandardMaterial({ color: 0x007acc, roughness: 0.3 })
-        );
-        volumeKnobMesh.rotation.x = Math.PI / 2;
-        volumeKnobMesh.position.set(ctrlX, 0.2, 1.7);
-        volumeKnobMesh.userData = { type: 'volumeKnob' };
-        scene.add(volumeKnobMesh);
-        interactiveObjects.push(volumeKnobMesh);
+        // --- Lautstärke-Drehregler: ungedrehte Gruppe trägt die Rotation um die Blickachse (Z) ---
+        volumeKnobGroup = new THREE.Group();
+        volumeKnobGroup.position.set(ctrlX, 0.2, 1.7);
+        scene.add(volumeKnobGroup);
 
-        const volIndicator = new THREE.Mesh(
-            new THREE.BoxGeometry(0.03, 0.18, 0.03),
+        const volBody = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.24, 0.24, 0.2, 32),
+            new THREE.MeshStandardMaterial({ color: 0x0077bb, roughness: 0.3 })
+        );
+        volBody.rotation.x = Math.PI / 2;
+        volBody.userData = { type: 'volumeKnob' };
+        volumeKnobGroup.add(volBody);
+        interactiveObjects.push(volBody);
+
+        const volPointer = new THREE.Mesh(
+            new THREE.BoxGeometry(0.05, 0.19, 0.05),
             new THREE.MeshStandardMaterial({ color: 0xffffff })
         );
-        volIndicator.position.set(0, 0.12, 0.11);
-        volumeKnobMesh.add(volIndicator);
+        volPointer.position.set(0, 0.2, 0.11); // sitzt am Rand des Knopfes, dreht sich mit der Gruppe
+        volPointer.userData = { type: 'volumeKnob' };
+        volumeKnobGroup.add(volPointer);
+        interactiveObjects.push(volPointer);
 
-        // Kanal-Wahlrad
-        channelKnobMesh = new THREE.Mesh(
-            new THREE.CylinderGeometry(0.26, 0.26, 0.22, 32),
-            new THREE.MeshStandardMaterial({ color: 0xe0a020, roughness: 0.3 })
+        const volRing = new THREE.Mesh(new THREE.TorusGeometry(0.26, 0.018, 8, 28), chromeRingMat());
+        volRing.rotation.x = Math.PI / 2;
+        volRing.position.z = 0.1;
+        volumeKnobGroup.add(volRing);
+
+        // --- Kanal-Wahlrad ---
+        channelKnobGroup = new THREE.Group();
+        channelKnobGroup.position.set(ctrlX, -0.35, 1.71);
+        scene.add(channelKnobGroup);
+
+        const chBody = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.27, 0.27, 0.22, 32),
+            new THREE.MeshStandardMaterial({ color: 0xe0a020, roughness: 0.35 })
         );
-        channelKnobMesh.rotation.x = Math.PI / 2;
-        channelKnobMesh.position.set(ctrlX, -0.35, 1.71);
-        channelKnobMesh.userData = { type: 'channelKnob' };
-        scene.add(channelKnobMesh);
-        interactiveObjects.push(channelKnobMesh);
+        chBody.rotation.x = Math.PI / 2;
+        chBody.userData = { type: 'channelKnob' };
+        channelKnobGroup.add(chBody);
+        interactiveObjects.push(chBody);
 
-        const chIndicator = new THREE.Mesh(
-            new THREE.BoxGeometry(0.03, 0.2, 0.03),
+        const chPointer = new THREE.Mesh(
+            new THREE.BoxGeometry(0.05, 0.22, 0.05),
             new THREE.MeshStandardMaterial({ color: 0x1a1a1a })
         );
-        chIndicator.position.set(0, 0.13, 0.12);
-        channelKnobMesh.add(chIndicator);
+        chPointer.position.set(0, 0.22, 0.12);
+        chPointer.userData = { type: 'channelKnob' };
+        channelKnobGroup.add(chPointer);
+        interactiveObjects.push(chPointer);
 
-        // Playlist-Taste (Land wählen)
+        const chRing = new THREE.Mesh(new THREE.TorusGeometry(0.29, 0.018, 8, 28), chromeRingMat());
+        chRing.rotation.x = Math.PI / 2;
+        chRing.position.z = 0.11;
+        channelKnobGroup.add(chRing);
+
+        // Playlist-Taste (creme)
         playlistBtnMesh = new THREE.Mesh(
             new THREE.BoxGeometry(0.4, 0.22, 0.15),
-            new THREE.MeshStandardMaterial({ color: 0x444444, roughness: 0.4 })
+            new THREE.MeshStandardMaterial({ color: 0xd8c9a0, roughness: 0.5 })
         );
         playlistBtnMesh.position.set(ctrlX, -0.95, 1.68);
         playlistBtnMesh.userData = { type: 'openPlaylist', baseZ: 1.68, pressedZ: 1.62 };
         scene.add(playlistBtnMesh);
         interactiveObjects.push(playlistBtnMesh);
 
-        // Senderliste-Taste
+        // Senderlisten-Taste (creme)
         channelListBtnMesh = new THREE.Mesh(
             new THREE.BoxGeometry(0.4, 0.22, 0.15),
-            new THREE.MeshStandardMaterial({ color: 0x444444, roughness: 0.4 })
+            new THREE.MeshStandardMaterial({ color: 0xd8c9a0, roughness: 0.5 })
         );
         channelListBtnMesh.position.set(ctrlX, -1.3, 1.68);
         channelListBtnMesh.userData = { type: 'openChannelList', baseZ: 1.68, pressedZ: 1.62 };
         scene.add(channelListBtnMesh);
         interactiveObjects.push(channelListBtnMesh);
 
-        // Standfüße
-        const footMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a });
-        [[-1.9, -1.85, 1.3], [1.9, -1.85, 1.3], [-1.9, -1.85, -1.3], [1.9, -1.85, -1.3]].forEach(pos => {
-            const foot = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.14, 0.2, 16), footMat);
-            foot.position.set(pos[0], pos[1], pos[2]);
-            scene.add(foot);
+        // Standfüße (getaperte Beine, Messing-Kappen)
+        [[-1.9, 1.3], [1.9, 1.3], [-1.9, -1.3], [1.9, -1.3]].forEach(([x, z]) => {
+            const leg = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.09, 0.14, 0.3, 16),
+                new THREE.MeshStandardMaterial({ color: 0x2a1a0a, roughness: 0.6 })
+            );
+            leg.position.set(x, -1.85, z);
+            scene.add(leg);
+            const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 0.03, 16), chromeRingMat());
+            cap.position.set(x, -1.71, z);
+            scene.add(cap);
         });
 
-        updateVolumeKnobRotation();
+        setVolume(volume);
+        updateChannelKnobRotation();
+        drawNoSignal();
         redrawHUDText();
     }
 
+    function withOpenChannelList(mesh) {
+        mesh.userData = { type: 'openChannelList' };
+        return mesh;
+    }
+
+    // ================= Bildschirm-Inhalt =================
     function drawNoSignal() {
-        const ctx = screenCtx;
-        ctx.fillStyle = '#001122';
-        ctx.fillRect(0, 0, 640, 360);
-        ctx.fillStyle = '#3388cc';
-        ctx.font = 'bold 28px monospace';
-        ctx.textAlign = 'center';
-        ctx.fillText('KEIN SIGNAL', 320, 165);
-        ctx.font = '16px monospace';
-        ctx.fillStyle = '#5599cc';
-        ctx.fillText('Klick auf den Bildschirm für die Senderliste', 320, 205);
+        // Wird vom Static-Noise in animate() weitergezeichnet; hier nur Erstinitialisierung
+        drawStaticFrame();
+    }
+
+    function drawStaticFrame() {
+        const data = noiseImageData.data;
+        for (let i = 0; i < data.length; i += 4) {
+            const v = (Math.random() * 255) | 0;
+            data[i] = v; data[i + 1] = v; data[i + 2] = v; data[i + 3] = 255;
+        }
+        screenCtx.putImageData(noiseImageData, 0, 0);
+        screenCtx.fillStyle = 'rgba(0,0,0,0.4)';
+        screenCtx.fillRect(0, 0, screenCanvas.width, screenCanvas.height);
+        screenCtx.fillStyle = '#e0e0e0';
+        screenCtx.font = 'bold 26px monospace';
+        screenCtx.textAlign = 'center';
+        screenCtx.fillText('KEIN SIGNAL', 320, 165);
+        screenCtx.font = '15px monospace';
+        screenCtx.fillStyle = '#bbbbbb';
+        screenCtx.fillText('Klick auf den Bildschirm für die Senderliste', 320, 205);
         screenTexture.needsUpdate = true;
     }
 
@@ -358,6 +489,12 @@
         ctx.fillText(line, x, curY);
     }
 
+    function switchToCanvasScreen() {
+        usingVideoTexture = false;
+        screenMesh.material.map = screenTexture;
+        screenMesh.material.needsUpdate = true;
+    }
+
     function redrawHUDText() {
         const pd = document.getElementById('playlist-display');
         const cd = document.getElementById('channel-display');
@@ -370,10 +507,15 @@
         if (el) el.innerText = msg;
     }
 
+    // ================= Regler-Rotation =================
     function updateVolumeKnobRotation() {
-        if (!volumeKnobMesh) return;
-        const deg = VOL_MIN_DEG + volume * (VOL_MAX_DEG - VOL_MIN_DEG);
-        volumeKnobMesh.rotation.z = THREE.MathUtils.degToRad(deg);
+        if (!volumeKnobGroup) return;
+        volumeKnobGroup.rotation.z = THREE.MathUtils.degToRad(volumeKnobAngleDeg);
+    }
+
+    function updateChannelKnobRotation() {
+        if (!channelKnobGroup) return;
+        // rein optisch: Winkel folgt der Zieh-Bewegung, keine feste Zielposition nötig
     }
 
     function setVolume(v) {
@@ -381,10 +523,11 @@
         video.volume = volume;
         const vd = document.getElementById('volume-display');
         if (vd) vd.innerText = `${Math.round(volume * 100)}%`;
+        volumeKnobAngleDeg = VOL_MIN_DEG + volume * (VOL_MAX_DEG - VOL_MIN_DEG);
         updateVolumeKnobRotation();
     }
 
-    // ================= Playlists (Länder) laden – wie im Original-Projekt =================
+    // ================= Playlists laden (wie Original-Projekt) =================
     async function fetchPlaylists() {
         setStatus('Lade Playlists...');
         const apiUrl = 'https://api.github.com/repos/Free-TV/IPTV/contents/playlists';
@@ -504,24 +647,27 @@
         if (myLoadId !== loadId) return;
         console.error(err);
         isPlaying = false;
-        powerBtnMesh.material.color.setHex(0x555555);
+        powerBtnMesh.material.color.setHex(0x666666);
         ledMesh.material.color.setHex(0x550000);
         ledMesh.material.emissive.setHex(0x330000);
         setStatus('Fehler beim Abspielen');
+        switchToCanvasScreen();
         drawErrorScreen(String(err.message || err));
     }
 
     function attachVideoTexture() {
-        if (usingVideoTexture) return;
         try {
-            videoTexture = new THREE.VideoTexture(video);
-            videoTexture.minFilter = THREE.LinearFilter;
-            videoTexture.magFilter = THREE.LinearFilter;
+            if (!videoTexture) {
+                videoTexture = new THREE.VideoTexture(video);
+                videoTexture.minFilter = THREE.LinearFilter;
+                videoTexture.magFilter = THREE.LinearFilter;
+            }
             screenMesh.material.map = videoTexture;
             screenMesh.material.needsUpdate = true;
             usingVideoTexture = true;
         } catch (e) {
             console.warn('Video-Textur konnte nicht angehängt werden (evtl. CORS):', e);
+            switchToCanvasScreen();
             drawErrorScreen('Sender evtl. nicht anzeigbar (CORS). Ton läuft weiter – nutze "Vollbild".');
         }
     }
@@ -530,7 +676,7 @@
         if (isPlaying) {
             video.pause();
             isPlaying = false;
-            powerBtnMesh.material.color.setHex(0x555555);
+            powerBtnMesh.material.color.setHex(0x666666);
             ledMesh.material.color.setHex(0x550000);
             ledMesh.material.emissive.setHex(0x330000);
             setStatus('Pausiert');
@@ -544,7 +690,7 @@
     function toggleMute() {
         isMuted = !isMuted;
         video.muted = isMuted;
-        muteBtnMesh.material.color.setHex(isMuted ? 0xd11a2a : 0x555555);
+        muteBtnMesh.material.color.setHex(isMuted ? 0xd11a2a : 0x666666);
         muteBtnMesh.position.z = isMuted ? muteBtnMesh.userData.pressedZ : muteBtnMesh.userData.baseZ;
     }
 
@@ -561,7 +707,7 @@
     function goFullscreen() {
         if (video.requestFullscreen) video.requestFullscreen();
         else if (video.webkitRequestFullscreen) video.webkitRequestFullscreen();
-        else if (video.webkitEnterFullscreen) video.webkitEnterFullscreen(); // iOS Safari
+        else if (video.webkitEnterFullscreen) video.webkitEnterFullscreen();
     }
 
     // ================= Pointer-Interaktion =================
@@ -616,7 +762,8 @@
             const deltaX = event.clientX - dragStartX;
             dragStartX = event.clientX;
             channelDragAccum += deltaX;
-            channelKnobMesh.rotation.z -= deltaX * 0.02;
+            // Zeiger dreht sich sichtbar im Uhrzeigersinn/gegen den Uhrzeigersinn um die Blickachse
+            channelKnobGroup.rotation.z -= THREE.MathUtils.degToRad(deltaX * 0.6);
             while (channelDragAccum >= CHANNEL_STEP_DEG) {
                 nextChannel();
                 channelDragAccum -= CHANNEL_STEP_DEG;
@@ -637,7 +784,7 @@
                 hoveredObject.material.emissive.setHex(0x000000);
             }
             hoveredObject = obj;
-            if (hoveredObject && hoveredObject.material.emissive && hoveredObject.userData.type !== 'openChannelList') {
+            if (hoveredObject && hoveredObject.material.emissive) {
                 hoveredObject.material.emissive.setHex(0x222222);
             }
             renderer.domElement.style.cursor = obj ? 'pointer' : 'default';
@@ -710,7 +857,14 @@
     function animate() {
         requestAnimationFrame(animate);
         controls.update();
-        if (usingVideoTexture && videoTexture) videoTexture.needsUpdate = true;
+
+        if (usingVideoTexture && videoTexture) {
+            videoTexture.needsUpdate = true;
+        } else {
+            noiseFrameCounter++;
+            if (noiseFrameCounter % 2 === 0) drawStaticFrame(); // dezent gedrosselt
+        }
+
         renderer.render(scene, camera);
     }
 
